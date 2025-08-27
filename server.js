@@ -193,8 +193,18 @@ app.listen(PORT, HOST, () => {
   if (lan) {
     console.log(`LAN access:        http://${lan}:${PORT}`);
   }
-  // Kick off HLS generation in background
-  generateHls();
+  
+  // Check if HLS files already exist before generating
+  const hlsDir = path.join(__dirname, 'hls');
+  const hlsManifest = path.join(hlsDir, 'stream.m3u8');
+  const hlsExists = fs.existsSync(hlsManifest) && fs.existsSync(hlsDir);
+
+  if (hlsExists && !FORCE_HLS) {
+    console.log('HLS already present; skipping regeneration. Set FORCE_HLS=1 to rebuild.');
+  } else {
+    // Kick off HLS generation in background
+    generateHls();
+  }
 });
 
 
