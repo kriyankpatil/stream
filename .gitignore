@@ -5,7 +5,4 @@ cloudflared*
 cf.*.log
 .env
 *.zip
-Dockerfile
-.dockerignore
-install.sh
 movie/
