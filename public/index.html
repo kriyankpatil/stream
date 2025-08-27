@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Movie Stream</title>
+    <style>
+      :root { color-scheme: dark light; }
+      body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #0b0b0c; color: #eaeaea; }
+      header { padding: 16px; border-bottom: 1px solid #222; display: flex; align-items: center; justify-content: space-between; }
+      h1 { margin: 0; font-size: 18px; }
+      .container { max-width: 1000px; margin: 0 auto; padding: 16px; }
+      .player { aspect-ratio: 16 / 9; background: #111; border: 1px solid #222; border-radius: 12px; overflow: hidden; }
+      video { width: 100%; height: 100%; display: block; background: black; }
+      .meta { margin-top: 12px; color: #aaa; font-size: 14px; display: flex; gap: 12px; align-items: center; }
+      .pill { padding: 4px 8px; border-radius: 999px; background: #1b1b1f; border: 1px solid #2a2a2f; color: #cfcfd6; font-size: 12px; }
+      a { color: #7fb4ff; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Movie Stream</h1>
+      <div class="pill">Local Demo</div>
+    </header>
+    <main class="container">
+      <div class="player">
+        <video id="video" controls preload="metadata"></video>
+      </div>
+      <div class="meta">
+        <span>Primary: HLS</span>
+        <span>Fallback: Range <code>/video</code></span>
+        <a href="/api/health" target="_blank" rel="noreferrer">Health</a>
+      </div>
+      <p>
+        If playback fails in some browsers due to MKV support, try opening in a
+        modern Chromium-based browser.
+      </p>
+    </main>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.14/dist/hls.min.js"></script>
+    <script>
+      const urlParams = new URLSearchParams(location.search);
+      const token = urlParams.get('token');
+      const manifestUrl = token ? `/hls/stream.m3u8?token=${encodeURIComponent(token)}` : '/hls/stream.m3u8';
+
+      const video = document.getElementById('video');
+      function playWithHls() {
+        if (window.Hls && Hls.isSupported()) {
+          const hls = new Hls({
+            startLevel: 0,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+            liveSyncDurationCount: 2,
+            fragLoadingRetryDelay: 300,
+            manifestLoadingRetryDelay: 300
+          });
+          // No CF-specific Authorization headers
+          hls.loadSource(manifestUrl);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+          hls.on(Hls.Events.ERROR, (e, data) => console.warn('HLS error', data));
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = manifestUrl;
+          video.addEventListener('loadedmetadata', () => video.play().catch(() => {}));
+        } else {
+          // Fallback to direct range streaming
+          const rangeUrl = token ? `/video?token=${encodeURIComponent(token)}` : '/video';
+          video.src = rangeUrl;
+        }
+      }
+      playWithHls();
+    </script>
+  </body>
+  </html>
+
+
