@@ -20,6 +20,23 @@ try {
   process.exit(1);
 }
 
+// Verify fast download tools are available
+const downloadTools = [
+  { name: 'aria2c', command: 'aria2c --version' },
+  { name: 'wget', command: 'wget --version' },
+  { name: 'curl', command: 'curl --version' }
+];
+
+console.log('Checking download tools availability:');
+downloadTools.forEach(tool => {
+  try {
+    execSync(tool.command, { stdio: 'ignore' });
+    console.log(`✅ ${tool.name} is available`);
+  } catch (error) {
+    console.warn(`⚠️ ${tool.name} not found - some download methods may not work`);
+  }
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -216,7 +233,7 @@ app.post('/api/download', requireToken, async (req, res) => {
     });
     
     // Use curl command for download
-    console.log(`Starting curl download: ${title} from ${downloadUrl}`);
+    console.log(`Starting fast download for ${title} to ${filePath}`);
     
     const downloadId = `${sanitizedTitle}_${Date.now()}`;
     const downloadInfo = {
@@ -231,11 +248,8 @@ app.post('/api/download', requireToken, async (req, res) => {
     
     activeDownloads.set(downloadId, downloadInfo);
     
-    const curlCommand = `curl -L -o "${filePath}" "${downloadUrl}"`;
-    console.log('Executing curl command:', curlCommand);
-    
     // Start download in background and respond immediately
-    downloadWithCurl(downloadId, downloadUrl, filePath, title, sanitizedTitle);
+    downloadWithFastMethod(downloadId, downloadUrl, filePath, title, sanitizedTitle);
     
     res.json({ 
       success: true, 
@@ -255,8 +269,8 @@ app.post('/api/download', requireToken, async (req, res) => {
   }
 });
 
-// Function to handle curl download
-async function downloadWithCurl(downloadId, downloadUrl, filePath, title, sanitizedTitle) {
+// Function to handle fast download using multiple methods
+async function downloadWithFastMethod(downloadId, downloadUrl, filePath, title, sanitizedTitle) {
   try {
     const downloadInfo = activeDownloads.get(downloadId);
     if (!downloadInfo) return;
@@ -264,53 +278,96 @@ async function downloadWithCurl(downloadId, downloadUrl, filePath, title, saniti
     downloadInfo.status = 'downloading';
     activeDownloads.set(downloadId, downloadInfo);
     
-    const downloadPromise = new Promise((resolve, reject) => {
-      const curlProcess = spawn('curl', ['-L', '-o', filePath, downloadUrl], {
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-      
-      let stdout = '';
-      let stderr = '';
-      
-      curlProcess.stdout.on('data', (data) => {
-        stdout += data.toString();
-        console.log('Curl stdout:', data.toString().trim());
-      });
-      
-      curlProcess.stderr.on('data', (data) => {
-        stderr += data.toString();
-        console.log('Curl stderr:', data.toString().trim());
-      });
-      
-      curlProcess.on('close', (code) => {
-        console.log(`Curl process exited with code ${code}`);
-        if (code === 0) {
-          console.log(`Download completed: ${title}`);
-          resolve(filePath);
-        } else {
-          reject(new Error(`Curl failed with code ${code}. Stderr: ${stderr}`));
-        }
-      });
-      
-      curlProcess.on('error', (err) => {
-        console.error('Failed to start curl process:', err);
-        reject(err);
-      });
-      
-      // Set timeout for curl process
-      setTimeout(() => {
-        if (!curlProcess.killed) {
-          console.log('Curl process timeout, killing process');
-          curlProcess.kill('SIGKILL');
-          reject(new Error('Download timeout'));
-        }
-      }, 1800000); // 30 minutes timeout
-    });
+    console.log(`Starting fast download for ${title} to ${filePath}`);
     
-    // Wait for download to complete
-    console.log('Waiting for curl download to complete...');
-    await downloadPromise;
-    console.log('Curl download promise resolved');
+    // Try multiple download methods in order of preference
+    const downloadMethods = [
+      { name: 'aria2c', command: 'aria2c', args: ['--max-connection-per-server=16', '--min-split-size=1M', '--split=16', '--continue=true', '--max-download-limit=0', '--file-allocation=none', '-o', path.basename(filePath), '-d', path.dirname(filePath), downloadUrl] },
+      { name: 'wget', command: 'wget', args: ['--continue', '--tries=3', '--timeout=30', '--progress=bar', '-O', filePath, downloadUrl] },
+      { name: 'curl', command: 'curl', args: ['-L', '-C', '-', '--connect-timeout', '30', '--max-time', '1800', '--retry', '3', '--retry-delay', '5', '-o', filePath, downloadUrl] }
+    ];
+    
+    let downloadSuccess = false;
+    let lastError = null;
+    
+    for (const method of downloadMethods) {
+      try {
+        console.log(`Trying download method: ${method.name}`);
+        
+        const downloadPromise = new Promise((resolve, reject) => {
+          const downloadProcess = spawn(method.command, method.args, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            cwd: '/app'
+          });
+          
+          let stdout = '';
+          let stderr = '';
+          
+          downloadProcess.stdout.on('data', (data) => {
+            stdout += data.toString();
+            console.log(`${method.name} stdout:`, data.toString().trim());
+          });
+          
+          downloadProcess.stderr.on('data', (data) => {
+            stderr += data.toString();
+            console.log(`${method.name} stderr:`, data.toString().trim());
+          });
+          
+          downloadProcess.on('close', (code) => {
+            console.log(`${method.name} process exited with code ${code}`);
+            if (code === 0) {
+              console.log(`Download completed with ${method.name}: ${title}`);
+              resolve(filePath);
+            } else {
+              reject(new Error(`${method.name} failed with code ${code}. Stderr: ${stderr}`));
+            }
+          });
+          
+          downloadProcess.on('error', (err) => {
+            console.error(`Failed to start ${method.name} process:`, err);
+            reject(err);
+          });
+          
+          // Set timeout for download process
+          setTimeout(() => {
+            if (!downloadProcess.killed) {
+              console.log(`${method.name} process timeout, killing process`);
+              downloadProcess.kill('SIGKILL');
+              reject(new Error('Download timeout'));
+            }
+          }, 1800000); // 30 minutes timeout
+        });
+        
+        // Wait for download to complete
+        console.log(`Waiting for ${method.name} download to complete...`);
+        await downloadPromise;
+        console.log(`${method.name} download promise resolved`);
+        
+        downloadSuccess = true;
+        break; // Exit loop on success
+        
+      } catch (error) {
+        console.error(`${method.name} download failed:`, error);
+        lastError = error;
+        
+        // Clean up partial file before trying next method
+        try {
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Cleaned up partial file from ${method.name}`);
+          }
+        } catch (cleanupError) {
+          console.error('Failed to cleanup partial file:', cleanupError);
+        }
+        
+        // Continue to next method
+        continue;
+      }
+    }
+    
+    if (!downloadSuccess) {
+      throw new Error(`All download methods failed. Last error: ${lastError?.message}`);
+    }
     
     // Verify file was downloaded
     if (!fs.existsSync(filePath)) {
