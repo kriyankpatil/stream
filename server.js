@@ -3,12 +3,19 @@ const fs = require('fs');
 const express = require('express');
 const os = require('os');
 const { spawn } = require('child_process');
+
+// Use system-installed ffmpeg (installed via apt in Dockerfile)
 let ffmpegExecutable = process.env.FFMPEG_PATH || 'ffmpeg';
+
+// Verify ffmpeg is available
 try {
-  // Optional: prefer bundled binary if available on this platform
-  const ffmpegStatic = require('ffmpeg-static');
-  if (ffmpegStatic) ffmpegExecutable = ffmpegStatic;
-} catch (_) {}
+  const { execSync } = require('child_process');
+  execSync(`${ffmpegExecutable} -version`, { stdio: 'ignore' });
+  console.log(`Using ffmpeg: ${ffmpegExecutable}`);
+} catch (error) {
+  console.error(`FFmpeg not found at ${ffmpegExecutable}. Please ensure ffmpeg is installed.`);
+  process.exit(1);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
