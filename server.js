@@ -3,6 +3,9 @@ const fs = require('fs');
 const express = require('express');
 const os = require('os');
 const { spawn } = require('child_process');
+const https = require('https');
+const http = require('http');
+const url = require('url');
 
 // Use system-installed ffmpeg (installed via apt in Dockerfile)
 let ffmpegExecutable = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -23,6 +26,9 @@ const HOST = process.env.HOST || '0.0.0.0';
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '';
 const FORCE_HLS = process.env.FORCE_HLS === '1';
 
+// Middleware for parsing JSON
+app.use(express.json({ limit: '10mb' }));
+
 // Serve static client files from /public
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -31,39 +37,54 @@ const MOVIES_DIR = path.join(__dirname, 'movies');
 const SUPPORTED_EXTENSIONS = new Set(['.mkv', '.mp4', '.webm', '.mov']);
 let MOVIES = [];
 
-try {
-  if (fs.existsSync(MOVIES_DIR)) {
-    const movieFolders = fs.readdirSync(MOVIES_DIR, { withFileTypes: true })
-      .filter(e => e.isDirectory())
-      .map(folder => {
-        const folderPath = path.join(MOVIES_DIR, folder.name);
-        const movieFiles = fs.readdirSync(folderPath, { withFileTypes: true })
-          .filter(e => e.isFile())
-          .filter(e => SUPPORTED_EXTENSIONS.has(path.extname(e.name).toLowerCase()))
-          .map(f => ({
-            name: path.parse(f.name).name,
-            path: path.join(folderPath, f.name),
-            extension: path.extname(f.name)
-          }));
-        
-        return {
-          id: folder.name,
-          name: folder.name,
-          folder: folderPath,
-          movies: movieFiles,
-          hlsPath: path.join(folderPath, 'hls')
-        };
-      })
-      .filter(movie => movie.movies.length > 0);
-    
-    MOVIES = movieFolders;
-    console.log(`Found ${MOVIES.length} movie folders:`, MOVIES.map(m => `${m.name} (${m.movies.length} movies)`));
-  } else {
-    console.warn(`Movies directory not found at ${MOVIES_DIR}`);
+// Function to scan and update movies list
+function scanMovies() {
+  try {
+    if (fs.existsSync(MOVIES_DIR)) {
+      const movieFolders = fs.readdirSync(MOVIES_DIR, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(folder => {
+          const folderPath = path.join(MOVIES_DIR, folder.name);
+          const movieFiles = fs.readdirSync(folderPath, { withFileTypes: true })
+            .filter(e => e.isFile())
+            .filter(e => SUPPORTED_EXTENSIONS.has(path.extname(e.name).toLowerCase()))
+            .map(f => ({
+              name: path.parse(f.name).name,
+              path: path.join(folderPath, f.name),
+              extension: path.extname(f.name),
+              size: fs.statSync(path.join(folderPath, f.name)).size
+            }));
+          
+          return {
+            id: folder.name,
+            name: folder.name,
+            folder: folderPath,
+            movies: movieFiles,
+            hlsPath: path.join(folderPath, 'hls'),
+            createdAt: fs.statSync(folderPath).birthtime
+          };
+        })
+        .filter(movie => movie.movies.length > 0);
+      
+      MOVIES = movieFolders;
+      console.log(`Found ${MOVIES.length} movie folders:`, MOVIES.map(m => `${m.name} (${m.movies.length} movies)`));
+    } else {
+      console.warn(`Movies directory not found at ${MOVIES_DIR}`);
+      // Create movies directory if it doesn't exist
+      try {
+        fs.mkdirSync(MOVIES_DIR, { recursive: true });
+        console.log('Created movies directory');
+      } catch (e) {
+        console.error('Failed to create movies directory:', e);
+      }
+    }
+  } catch (e) {
+    console.warn(`Error reading movies directory:`, e);
   }
-} catch (e) {
-  console.warn(`Error reading movies directory:`, e);
 }
+
+// Initial scan
+scanMovies();
 
 // Serve HLS files for each movie
 MOVIES.forEach(movie => {
@@ -87,14 +108,168 @@ app.get('/api/health', (req, res) => {
 });
 
 app.get('/api/movies', (req, res) => {
+  // Rescan movies before returning list
+  scanMovies();
   res.json(MOVIES.map(movie => ({
     id: movie.id,
     name: movie.name,
     movies: movie.movies.map(m => ({
       name: m.name,
-      extension: m.extension
-    }))
+      extension: m.extension,
+      size: m.size
+    })),
+    createdAt: movie.createdAt,
+    hasHls: fs.existsSync(movie.hlsPath) && fs.existsSync(path.join(movie.hlsPath, 'stream.m3u8'))
   })));
+});
+
+// Download movie endpoint
+app.post('/api/download', requireToken, async (req, res) => {
+  const { downloadUrl, title } = req.body;
+  
+  if (!downloadUrl || !title) {
+    return res.status(400).json({ error: 'Download URL and title are required' });
+  }
+  
+  // Sanitize title for folder name
+  const sanitizedTitle = title.replace(/[<>:"/\\|?*]/g, '_').trim();
+  const movieFolder = path.join(MOVIES_DIR, sanitizedTitle);
+  
+  try {
+    // Create movie folder
+    if (!fs.existsSync(movieFolder)) {
+      fs.mkdirSync(movieFolder, { recursive: true });
+    }
+    
+    // Determine file extension from URL
+    const urlPath = url.parse(downloadUrl).pathname;
+    const extension = path.extname(urlPath) || '.mp4';
+    const fileName = `movie${extension}`;
+    const filePath = path.join(movieFolder, fileName);
+    
+    // Start download
+    console.log(`Starting download: ${title} from ${downloadUrl}`);
+    
+    const downloadPromise = new Promise((resolve, reject) => {
+      const protocol = downloadUrl.startsWith('https:') ? https : http;
+      
+      const request = protocol.get(downloadUrl, (response) => {
+        if (response.statusCode !== 200) {
+          reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
+          return;
+        }
+        
+        const fileStream = fs.createWriteStream(filePath);
+        const totalSize = parseInt(response.headers['content-length'], 10);
+        let downloadedSize = 0;
+        
+        response.on('data', (chunk) => {
+          downloadedSize += chunk.length;
+          // You could emit progress here if needed
+        });
+        
+        response.pipe(fileStream);
+        
+        fileStream.on('finish', () => {
+          fileStream.close();
+          console.log(`Download completed: ${title}`);
+          resolve(filePath);
+        });
+        
+        fileStream.on('error', (err) => {
+          fs.unlink(filePath, () => {}); // Delete partial file
+          reject(err);
+        });
+      });
+      
+      request.on('error', (err) => {
+        reject(err);
+      });
+      
+      request.setTimeout(300000, () => { // 5 minute timeout
+        request.destroy();
+        reject(new Error('Download timeout'));
+      });
+    });
+    
+    // Wait for download to complete
+    await downloadPromise;
+    
+    // Rescan movies to include the new one
+    scanMovies();
+    
+    // Generate HLS for the new movie
+    const newMovie = MOVIES.find(m => m.id === sanitizedTitle);
+    if (newMovie && newMovie.movies.length > 0) {
+      generateHls(newMovie, newMovie.movies[0]);
+    }
+    
+    res.json({ 
+      success: true, 
+      message: `Movie "${title}" downloaded successfully`,
+      movieId: sanitizedTitle
+    });
+    
+  } catch (error) {
+    console.error(`Download failed for ${title}:`, error);
+    
+    // Clean up partial download
+    try {
+      if (fs.existsSync(movieFolder)) {
+        fs.rmSync(movieFolder, { recursive: true, force: true });
+      }
+    } catch (cleanupError) {
+      console.error('Failed to cleanup partial download:', cleanupError);
+    }
+    
+    res.status(500).json({ 
+      error: 'Download failed', 
+      details: error.message 
+    });
+  }
+});
+
+// Delete movie endpoint
+app.delete('/api/movies/:movieId', requireToken, (req, res) => {
+  const { movieId } = req.params;
+  const movie = MOVIES.find(m => m.id === movieId);
+  
+  if (!movie) {
+    return res.status(404).json({ error: 'Movie not found' });
+  }
+  
+  try {
+    // Remove the entire movie folder
+    fs.rmSync(movie.folder, { recursive: true, force: true });
+    console.log(`Deleted movie: ${movie.name}`);
+    
+    // Rescan movies
+    scanMovies();
+    
+    res.json({ success: true, message: `Movie "${movie.name}" deleted successfully` });
+  } catch (error) {
+    console.error(`Failed to delete movie ${movie.name}:`, error);
+    res.status(500).json({ error: 'Failed to delete movie', details: error.message });
+  }
+});
+
+// Regenerate HLS for specific movie
+app.post('/api/movies/:movieId/regenerate-hls', requireToken, (req, res) => {
+  const { movieId } = req.params;
+  const movie = MOVIES.find(m => m.id === movieId);
+  
+  if (!movie) {
+    return res.status(404).json({ error: 'Movie not found' });
+  }
+  
+  if (movie.movies.length === 0) {
+    return res.status(400).json({ error: 'No movie files found' });
+  }
+  
+  // Force HLS regeneration
+  generateHls(movie, movie.movies[0], true);
+  
+  res.json({ success: true, message: `HLS regeneration started for "${movie.name}"` });
 });
 
 // Optional auth: if ACCESS_TOKEN is set, require it for protected routes
@@ -191,19 +366,21 @@ function generateHlsForAll() {
 }
 
 // HLS generation for a specific movie
-function generateHls(movie, movieFile) {
+function generateHls(movie, movieFile, force = false) {
   const hlsDir = movie.hlsPath;
   const manifestPath = path.join(hlsDir, 'stream.m3u8');
   
-  // Skip regeneration if manifest and at least one segment already exist (unless FORCE_HLS=1)
-  try {
-    const hasManifest = fs.existsSync(manifestPath);
-    const hasAnySegment = fs.existsSync(hlsDir) && (fs.readdirSync(hlsDir).some((n) => n.startsWith('seg_') && n.endsWith('.ts')));
-    if (!FORCE_HLS && hasManifest && hasAnySegment) {
-      console.log(`HLS already present for ${movie.name}; skipping regeneration. Set FORCE_HLS=1 to rebuild.`);
-      return;
-    }
-  } catch {}
+  // Skip regeneration if manifest and at least one segment already exist (unless forced)
+  if (!force) {
+    try {
+      const hasManifest = fs.existsSync(manifestPath);
+      const hasAnySegment = fs.existsSync(hlsDir) && (fs.readdirSync(hlsDir).some((n) => n.startsWith('seg_') && n.endsWith('.ts')));
+      if (hasManifest && hasAnySegment) {
+        console.log(`HLS already present for ${movie.name}; skipping regeneration.`);
+        return;
+      }
+    } catch {}
+  }
   
   try { 
     fs.mkdirSync(hlsDir, { recursive: true }); 
@@ -267,7 +444,7 @@ app.listen(PORT, HOST, () => {
   if (MOVIES.length > 0) {
     generateHlsForAll();
   } else {
-    console.log('No movies found. Create folders in ./movies/ with movie files.');
+    console.log('No movies found. Create folders in ./movies/ with movie files or use the download interface.');
   }
 });
 

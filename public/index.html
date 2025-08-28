@@ -9,7 +9,63 @@
       body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #0b0b0c; color: #eaeaea; }
       header { padding: 16px; border-bottom: 1px solid #222; display: flex; align-items: center; justify-content: space-between; }
       h1 { margin: 0; font-size: 18px; }
-      .container { max-width: 1000px; margin: 0 auto; padding: 16px; }
+      .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+      
+      .download-section { 
+        background: #1a1a1a; 
+        border: 1px solid #333; 
+        border-radius: 12px; 
+        padding: 20px; 
+        margin-bottom: 24px; 
+      }
+      .download-form { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+      .form-group { display: flex; flex-direction: column; gap: 8px; }
+      .form-group label { font-size: 14px; color: #ccc; }
+      .form-group input { 
+        padding: 10px 12px; 
+        border-radius: 6px; 
+        border: 1px solid #333; 
+        background: #0b0b0c; 
+        color: #eaeaea; 
+        font-size: 14px; 
+        min-width: 300px;
+      }
+      .btn { 
+        padding: 10px 20px; 
+        border-radius: 6px; 
+        border: none; 
+        background: #007acc; 
+        color: white; 
+        font-size: 14px; 
+        cursor: pointer; 
+        transition: background 0.2s;
+      }
+      .btn:hover { background: #005a9e; }
+      .btn:disabled { background: #555; cursor: not-allowed; }
+      .btn-danger { background: #dc3545; }
+      .btn-danger:hover { background: #c82333; }
+      .btn-success { background: #28a745; }
+      .btn-success:hover { background: #218838; }
+      
+      .movies-grid { 
+        display: grid; 
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); 
+        gap: 16px; 
+        margin-bottom: 24px; 
+      }
+      .movie-card { 
+        background: #1a1a1a; 
+        border: 1px solid #333; 
+        border-radius: 12px; 
+        padding: 16px; 
+        transition: border-color 0.2s;
+      }
+      .movie-card:hover { border-color: #007acc; }
+      .movie-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+      .movie-info { font-size: 14px; color: #aaa; margin-bottom: 12px; }
+      .movie-actions { display: flex; gap: 8px; }
+      .movie-actions .btn { padding: 6px 12px; font-size: 12px; }
+      
       .movie-selector { margin-bottom: 20px; }
       .movie-selector select { padding: 8px 12px; border-radius: 6px; border: 1px solid #333; background: #1a1a1a; color: #eaeaea; font-size: 14px; }
       .player { aspect-ratio: 16 / 9; background: #111; border: 1px solid #222; border-radius: 12px; overflow: hidden; }
@@ -19,18 +75,50 @@
       a { color: #7fb4ff; }
       .loading { display: flex; align-items: center; justify-content: center; height: 200px; color: #666; }
       .error { color: #ff6b6b; padding: 16px; text-align: center; }
+      .success { color: #28a745; padding: 16px; text-align: center; }
+      
+      .status { padding: 12px; border-radius: 6px; margin-bottom: 16px; }
+      .status.error { background: #2d1b1b; border: 1px solid #dc3545; color: #ff6b6b; }
+      .status.success { background: #1b2d1b; border: 1px solid #28a745; color: #28a745; }
+      .status.info { background: #1b1b2d; border: 1px solid #007acc; color: #007acc; }
+      
+      .hidden { display: none; }
     </style>
   </head>
   <body>
     <header>
       <h1>Movie Stream</h1>
-      <div class="pill">Multi-Movie</div>
+      <div class="pill">Multi-Movie Manager</div>
     </header>
     <main class="container">
+      <!-- Download Section -->
+      <div class="download-section">
+        <h2>Download New Movie</h2>
+        <form class="download-form" id="downloadForm">
+          <div class="form-group">
+            <label for="movieTitle">Movie Title:</label>
+            <input type="text" id="movieTitle" placeholder="Enter movie title (e.g., The Matrix)" required>
+          </div>
+          <div class="form-group">
+            <label for="downloadUrl">Download URL:</label>
+            <input type="url" id="downloadUrl" placeholder="Paste movie download link here" required>
+          </div>
+          <button type="submit" class="btn" id="downloadBtn">Download Movie</button>
+        </form>
+        <div id="downloadStatus" class="status hidden"></div>
+      </div>
+      
+      <!-- Movies List -->
+      <h2>Your Movies</h2>
+      <div id="moviesGrid" class="movies-grid">
+        <div class="loading">Loading movies...</div>
+      </div>
+      
+      <!-- Movie Player -->
       <div class="movie-selector">
-        <label for="movieSelect">Select Movie: </label>
+        <label for="movieSelect">Select Movie to Play: </label>
         <select id="movieSelect">
-          <option value="">Loading movies...</option>
+          <option value="">Select a movie...</option>
         </select>
       </div>
       
@@ -62,9 +150,39 @@
       
       let currentMovie = null;
       let hls = null;
+      let movies = [];
       
       const video = document.getElementById('video');
       const movieSelect = document.getElementById('movieSelect');
+      const downloadForm = document.getElementById('downloadForm');
+      const downloadBtn = document.getElementById('downloadBtn');
+      const downloadStatus = document.getElementById('downloadStatus');
+      const moviesGrid = document.getElementById('moviesGrid');
+      
+      // Utility functions
+      function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      }
+      
+      function formatDate(dateString) {
+        return new Date(dateString).toLocaleDateString();
+      }
+      
+      function showStatus(message, type = 'info') {
+        downloadStatus.textContent = message;
+        downloadStatus.className = `status ${type}`;
+        downloadStatus.classList.remove('hidden');
+        
+        if (type === 'success') {
+          setTimeout(() => {
+            downloadStatus.classList.add('hidden');
+          }, 5000);
+        }
+      }
       
       // Load available movies
       async function loadMovies() {
@@ -72,8 +190,9 @@
           const response = await fetch(`/api/movies?token=${encodeURIComponent(token)}`);
           if (!response.ok) throw new Error('Failed to load movies');
           
-          const movies = await response.json();
+          movies = await response.json();
           
+          // Update movie selector
           movieSelect.innerHTML = '<option value="">Select a movie...</option>';
           movies.forEach(movie => {
             movie.movies.forEach(movieFile => {
@@ -84,6 +203,9 @@
             });
           });
           
+          // Update movies grid
+          renderMoviesGrid();
+          
           // Auto-select first movie if available
           if (movies.length > 0 && movies[0].movies.length > 0) {
             const firstMovie = `${movies[0].id}/${movies[0].movies[0].name}`;
@@ -92,8 +214,126 @@
           }
         } catch (error) {
           console.error('Error loading movies:', error);
-          movieSelect.innerHTML = '<option value="">Error loading movies</option>';
+          moviesGrid.innerHTML = '<div class="error">Error loading movies</div>';
         }
+      }
+      
+      // Render movies grid
+      function renderMoviesGrid() {
+        if (movies.length === 0) {
+          moviesGrid.innerHTML = '<div class="info">No movies found. Use the download form above to add your first movie!</div>';
+          return;
+        }
+        
+        moviesGrid.innerHTML = movies.map(movie => `
+          <div class="movie-card">
+            <div class="movie-title">${movie.name}</div>
+            <div class="movie-info">
+              ${movie.movies.map(m => `${m.name}${m.extension} (${formatFileSize(m.size)})`).join('<br>')}
+              <br>Added: ${formatDate(movie.createdAt)}
+              <br>HLS: ${movie.hasHls ? '✅ Ready' : '⏳ Processing'}
+            </div>
+            <div class="movie-actions">
+              <button class="btn btn-success" onclick="playMovie('${movie.id}/${movie.movies[0].name}')">Play</button>
+              <button class="btn" onclick="regenerateHls('${movie.id}')">Regenerate HLS</button>
+              <button class="btn btn-danger" onclick="deleteMovie('${movie.id}')">Delete</button>
+            </div>
+          </div>
+        `).join('');
+      }
+      
+      // Download movie
+      async function downloadMovie(title, url) {
+        try {
+          downloadBtn.disabled = true;
+          downloadBtn.textContent = 'Downloading...';
+          showStatus('Starting download...', 'info');
+          
+          const response = await fetch('/api/download', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ downloadUrl: url, title: title })
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+            showStatus(result.message, 'success');
+            // Reload movies after successful download
+            setTimeout(() => loadMovies(), 2000);
+          } else {
+            showStatus(`Download failed: ${result.error}`, 'error');
+          }
+        } catch (error) {
+          console.error('Download error:', error);
+          showStatus(`Download failed: ${error.message}`, 'error');
+        } finally {
+          downloadBtn.disabled = false;
+          downloadBtn.textContent = 'Download Movie';
+        }
+      }
+      
+      // Regenerate HLS for a movie
+      async function regenerateHls(movieId) {
+        try {
+          const response = await fetch(`/api/movies/${movieId}/regenerate-hls`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+            showStatus(result.message, 'success');
+            // Reload movies after HLS regeneration
+            setTimeout(() => loadMovies(), 2000);
+          } else {
+            showStatus(`HLS regeneration failed: ${result.error}`, 'error');
+          }
+        } catch (error) {
+          console.error('HLS regeneration error:', error);
+          showStatus(`HLS regeneration failed: ${error.message}`, 'error');
+        }
+      }
+      
+      // Delete movie
+      async function deleteMovie(movieId) {
+        if (!confirm('Are you sure you want to delete this movie? This action cannot be undone.')) {
+          return;
+        }
+        
+        try {
+          const response = await fetch(`/api/movies/${movieId}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+            showStatus(result.message, 'success');
+            // Reload movies after deletion
+            setTimeout(() => loadMovies(), 1000);
+          } else {
+            showStatus(`Deletion failed: ${result.error}`, 'error');
+          }
+        } catch (error) {
+          console.error('Deletion error:', error);
+          showStatus(`Deletion failed: ${error.message}`, 'error');
+        }
+      }
+      
+      // Play movie
+      function playMovie(moviePath) {
+        movieSelect.value = moviePath;
+        loadMovie(moviePath);
       }
       
       // Load and play selected movie
@@ -170,6 +410,17 @@
       }
       
       // Event listeners
+      downloadForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const title = document.getElementById('movieTitle').value.trim();
+        const url = document.getElementById('downloadUrl').value.trim();
+        
+        if (title && url) {
+          downloadMovie(title, url);
+          downloadForm.reset();
+        }
+      });
+      
       movieSelect.addEventListener('change', (e) => {
         if (e.target.value) {
           loadMovie(e.target.value);
