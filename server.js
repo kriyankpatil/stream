@@ -332,6 +332,11 @@ app.post('/api/download', requireToken, async (req, res) => {
     
     activeDownloads.set(downloadId, downloadInfo);
     
+    // Log download info storage
+    console.log(`Download info stored in Map with ID: ${downloadId}`);
+    console.log(`Current active downloads count: ${activeDownloads.size}`);
+    console.log(`Download info:`, downloadInfo);
+    
     // Start download in background and respond immediately
     downloadWithProgress(downloadId, url, filePath, title, sanitizedTitle);
     
@@ -669,11 +674,25 @@ async function downloadWithFastMethod(downloadId, downloadUrl, filePath, title, 
 // Get download status
 app.get('/api/download/:downloadId/status', requireToken, (req, res) => {
   const { downloadId } = req.params;
+  
+  console.log(`Status check requested for download ID: ${downloadId}`);
+  console.log(`Current active downloads count: ${activeDownloads.size}`);
+  console.log(`Active download IDs: ${Array.from(activeDownloads.keys())}`);
+  
   const downloadInfo = activeDownloads.get(downloadId);
   
   if (!downloadInfo) {
-    return res.status(404).json({ error: 'Download not found' });
+    console.log(`Download not found: ${downloadId}`);
+    console.log(`Available downloads:`, Array.from(activeDownloads.keys()));
+    return res.status(404).json({ 
+      error: 'Download not found',
+      requestedId: downloadId,
+      availableIds: Array.from(activeDownloads.keys()),
+      totalDownloads: activeDownloads.size
+    });
   }
+  
+  console.log(`Download found: ${downloadId}, status: ${downloadInfo.status}`);
   
   // Calculate additional info
   const elapsed = Date.now() - downloadInfo.startTime;
@@ -708,6 +727,35 @@ app.get('/api/debug/downloads', requireToken, (req, res) => {
     downloads: downloads,
     mapSize: activeDownloads.size,
     mapKeys: downloadIds
+  });
+});
+
+// Test endpoint to add a dummy download
+app.post('/api/test/download', requireToken, (req, res) => {
+  const testId = `test_${Date.now()}`;
+  const testDownload = {
+    id: testId,
+    title: 'Test Download',
+    status: 'testing',
+    progress: 50,
+    downloaded: 0,
+    total: 0,
+    speed: 0,
+    eta: 0,
+    startTime: new Date(),
+    filePath: '/test/path',
+    url: 'https://test.com'
+  };
+  
+  activeDownloads.set(testId, testDownload);
+  console.log(`Test download added: ${testId}`);
+  console.log(`Current active downloads count: ${activeDownloads.size}`);
+  
+  res.json({ 
+    success: true, 
+    message: 'Test download added',
+    downloadId: testId,
+    totalDownloads: activeDownloads.size
   });
 });
 
