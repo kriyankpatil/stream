@@ -697,6 +697,20 @@ app.get('/api/downloads', requireToken, (req, res) => {
   res.json(downloads);
 });
 
+// Debug endpoint to check active downloads
+app.get('/api/debug/downloads', requireToken, (req, res) => {
+  const downloads = Array.from(activeDownloads.values());
+  const downloadIds = Array.from(activeDownloads.keys());
+  
+  res.json({
+    activeDownloadsCount: activeDownloads.size,
+    downloadIds: downloadIds,
+    downloads: downloads,
+    mapSize: activeDownloads.size,
+    mapKeys: downloadIds
+  });
+});
+
 // Delete movie endpoint
 app.delete('/api/movies/:movieId', requireToken, (req, res) => {
   const { movieId } = req.params;
