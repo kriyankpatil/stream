@@ -67,14 +67,26 @@ app.get('/api/health', (req, res) => {
 
 // Optional auth: if ACCESS_TOKEN is set, require it for protected routes
 function requireToken(req, res, next) {
-  if (!ACCESS_TOKEN) return next();
+  if (!ACCESS_TOKEN) {
+    console.log('No ACCESS_TOKEN set, allowing request');
+    return next();
+  }
+  
   const authHeader = req.get('authorization');
   const bearer = authHeader && authHeader.toLowerCase().startsWith('bearer ')
     ? authHeader.slice(7)
     : null;
   // Read token from query or Authorization header only
   const token = bearer || req.query.token;
-  if (token === ACCESS_TOKEN) return next();
+  
+  console.log(`Token validation: expected=${ACCESS_TOKEN}, received=${token}, path=${req.path}`);
+  
+  if (token === ACCESS_TOKEN) {
+    console.log('Token validation successful');
+    return next();
+  }
+  
+  console.log('Token validation failed, sending 401');
   res.status(401).send('Unauthorized');
 }
 
