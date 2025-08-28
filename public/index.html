@@ -10,32 +10,46 @@
       header { padding: 16px; border-bottom: 1px solid #222; display: flex; align-items: center; justify-content: space-between; }
       h1 { margin: 0; font-size: 18px; }
       .container { max-width: 1000px; margin: 0 auto; padding: 16px; }
+      .movie-selector { margin-bottom: 20px; }
+      .movie-selector select { padding: 8px 12px; border-radius: 6px; border: 1px solid #333; background: #1a1a1a; color: #eaeaea; font-size: 14px; }
       .player { aspect-ratio: 16 / 9; background: #111; border: 1px solid #222; border-radius: 12px; overflow: hidden; }
       video { width: 100%; height: 100%; display: block; background: black; }
       .meta { margin-top: 12px; color: #aaa; font-size: 14px; display: flex; gap: 12px; align-items: center; }
       .pill { padding: 4px 8px; border-radius: 999px; background: #1b1b1f; border: 1px solid #2a2a2f; color: #cfcfd6; font-size: 12px; }
       a { color: #7fb4ff; }
+      .loading { display: flex; align-items: center; justify-content: center; height: 200px; color: #666; }
+      .error { color: #ff6b6b; padding: 16px; text-align: center; }
     </style>
   </head>
   <body>
     <header>
       <h1>Movie Stream</h1>
-      <div class="pill">Local Demo</div>
+      <div class="pill">Multi-Movie</div>
     </header>
     <main class="container">
+      <div class="movie-selector">
+        <label for="movieSelect">Select Movie: </label>
+        <select id="movieSelect">
+          <option value="">Loading movies...</option>
+        </select>
+      </div>
+      
       <div class="player">
         <video id="video" controls preload="metadata"></video>
       </div>
+      
       <div class="meta">
         <span>Primary: HLS</span>
         <span>Fallback: Range <code>/video</code></span>
         <a href="/api/health" target="_blank" rel="noopener">Health</a>
       </div>
+      
       <p>
         If playback fails in some browsers due to MKV support, try opening in a
         modern Chromium-based browser.
       </p>
     </main>
+    
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.14/dist/hls.min.js"></script>
     <script>
       // Use the correct ACCESS_TOKEN that matches your backend
@@ -46,12 +60,69 @@
       // Use URL token if provided, otherwise use default ACCESS_TOKEN
       const token = urlToken || ACCESS_TOKEN;
       
-      const manifestUrl = `/hls/stream.m3u8?token=${encodeURIComponent(token)}`;
-
+      let currentMovie = null;
+      let hls = null;
+      
       const video = document.getElementById('video');
-      function playWithHls() {
+      const movieSelect = document.getElementById('movieSelect');
+      
+      // Load available movies
+      async function loadMovies() {
+        try {
+          const response = await fetch(`/api/movies?token=${encodeURIComponent(token)}`);
+          if (!response.ok) throw new Error('Failed to load movies');
+          
+          const movies = await response.json();
+          
+          movieSelect.innerHTML = '<option value="">Select a movie...</option>';
+          movies.forEach(movie => {
+            movie.movies.forEach(movieFile => {
+              const option = document.createElement('option');
+              option.value = `${movie.id}/${movieFile.name}`;
+              option.textContent = `${movie.name} - ${movieFile.name}`;
+              movieSelect.appendChild(option);
+            });
+          });
+          
+          // Auto-select first movie if available
+          if (movies.length > 0 && movies[0].movies.length > 0) {
+            const firstMovie = `${movies[0].id}/${movies[0].movies[0].name}`;
+            movieSelect.value = firstMovie;
+            loadMovie(firstMovie);
+          }
+        } catch (error) {
+          console.error('Error loading movies:', error);
+          movieSelect.innerHTML = '<option value="">Error loading movies</option>';
+        }
+      }
+      
+      // Load and play selected movie
+      function loadMovie(moviePath) {
+        if (!moviePath) return;
+        
+        currentMovie = moviePath;
+        const [movieId, movieName] = moviePath.split('/');
+        
+        // Stop current HLS if playing
+        if (hls) {
+          hls.destroy();
+          hls = null;
+        }
+        
+        // Reset video
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        
+        // Try HLS first
+        playWithHls(movieId, movieName);
+      }
+      
+      function playWithHls(movieId, movieName) {
         if (window.Hls && Hls.isSupported()) {
-          const hls = new Hls({
+          const manifestUrl = `/hls/${movieId}/stream.m3u8?token=${encodeURIComponent(token)}`;
+          
+          hls = new Hls({
             startLevel: 0,
             maxBufferLength: 30,
             maxMaxBufferLength: 60,
@@ -74,7 +145,7 @@
           hls.attachMedia(video);
           
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            console.log('HLS manifest loaded successfully');
+            console.log(`HLS manifest loaded successfully for ${movieName}`);
             video.play().catch(() => {});
           });
           
@@ -83,21 +154,30 @@
             if (data.fatal) {
               console.error('Fatal HLS error, falling back to direct video');
               // Fallback to direct video streaming
-              const rangeUrl = `/video?token=${encodeURIComponent(token)}`;
+              const rangeUrl = `/video/${movieId}/${movieName}?token=${encodeURIComponent(token)}`;
               video.src = rangeUrl;
             }
           });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          const manifestUrl = `/hls/${movieId}/stream.m3u8?token=${encodeURIComponent(token)}`;
           video.src = manifestUrl;
           video.addEventListener('loadedmetadata', () => video.play().catch(() => {}));
         } else {
           // Fallback to direct range streaming
-          const rangeUrl = `/video?token=${encodeURIComponent(token)}`;
+          const rangeUrl = `/video/${movieId}/${movieName}?token=${encodeURIComponent(token)}`;
           video.src = rangeUrl;
         }
       }
       
-      playWithHls();
+      // Event listeners
+      movieSelect.addEventListener('change', (e) => {
+        if (e.target.value) {
+          loadMovie(e.target.value);
+        }
+      });
+      
+      // Initialize
+      loadMovies();
     </script>
   </body>
 </html>

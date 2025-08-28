@@ -4,13 +4,12 @@ services:
     container_name: stream-backend
     environment:
       - HOST=0.0.0.0
-      - ACCESS_TOKEN=${ACCESS_TOKEN:-kriya2024}
+      - ACCESS_TOKEN=${ACCESS_TOKEN:-kriyank2024}
       - NODE_ENV=production
       # Uncomment to force a rebuild of HLS on next start
       # - FORCE_HLS=1
     volumes:
-      - ./movie:/app/movie:ro
-      - hls_data:/app/hls
+      - ./movies:/app/movies:ro
     networks:
       - app
     expose:
