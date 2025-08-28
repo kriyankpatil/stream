@@ -129,6 +129,17 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true });
 });
 
+// Test endpoint for debugging
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    message: 'Server is working',
+    timestamp: new Date().toISOString(),
+    moviesCount: MOVIES.length,
+    moviesDir: MOVIES_DIR,
+    moviesDirExists: fs.existsSync(MOVIES_DIR)
+  });
+});
+
 app.get('/api/movies', (req, res) => {
   // Rescan movies before returning list
   scanMovies();
@@ -147,27 +158,45 @@ app.get('/api/movies', (req, res) => {
 
 // Download movie endpoint
 app.post('/api/download', requireToken, async (req, res) => {
-  const { downloadUrl, title } = req.body;
-  
-  if (!downloadUrl || !title) {
-    return res.status(400).json({ error: 'Download URL and title are required' });
-  }
-  
-  // Sanitize title for folder name
-  const sanitizedTitle = title.replace(/[<>:"/\\|?*]/g, '_').trim();
-  const movieFolder = path.join(MOVIES_DIR, sanitizedTitle);
+  console.log('Download endpoint called with:', { 
+    body: req.body, 
+    headers: req.headers,
+    url: req.url 
+  });
   
   try {
+    const { downloadUrl, title } = req.body;
+    
+    if (!downloadUrl || !title) {
+      console.log('Missing required fields:', { downloadUrl: !!downloadUrl, title: !!title });
+      return res.status(400).json({ error: 'Download URL and title are required' });
+    }
+    
+    console.log('Processing download request:', { title, downloadUrl });
+    
+    // Sanitize title for folder name
+    const sanitizedTitle = title.replace(/[<>:"/\\|?*]/g, '_').trim();
+    const movieFolder = path.join(MOVIES_DIR, sanitizedTitle);
+    
+    console.log('Sanitized title and paths:', { 
+      originalTitle: title, 
+      sanitizedTitle, 
+      movieFolder,
+      moviesDir: MOVIES_DIR 
+    });
+    
     // Ensure movies directory exists
     if (!fs.existsSync(MOVIES_DIR)) {
+      console.log('Creating movies directory:', MOVIES_DIR);
       fs.mkdirSync(MOVIES_DIR, { recursive: true });
-      console.log('Created movies directory');
+      console.log('Movies directory created successfully');
     }
     
     // Create movie folder
     if (!fs.existsSync(movieFolder)) {
+      console.log('Creating movie folder:', movieFolder);
       fs.mkdirSync(movieFolder, { recursive: true });
-      console.log(`Created movie folder: ${movieFolder}`);
+      console.log('Movie folder created successfully');
     }
     
     // Determine file extension from URL
@@ -176,13 +205,27 @@ app.post('/api/download', requireToken, async (req, res) => {
     const fileName = `movie${extension}`;
     const filePath = path.join(movieFolder, fileName);
     
+    console.log('File details:', { 
+      urlPath, 
+      extension, 
+      fileName, 
+      filePath 
+    });
+    
     // Start download
     console.log(`Starting download: ${title} from ${downloadUrl}`);
     
     const downloadPromise = new Promise((resolve, reject) => {
       const protocol = downloadUrl.startsWith('https:') ? https : http;
+      console.log('Using protocol:', protocol === https ? 'https' : 'http');
       
       const request = protocol.get(downloadUrl, (response) => {
+        console.log('Download response received:', { 
+          statusCode: response.statusCode, 
+          statusMessage: response.statusMessage,
+          headers: response.headers 
+        });
+        
         if (response.statusCode !== 200) {
           reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
           return;
@@ -192,47 +235,68 @@ app.post('/api/download', requireToken, async (req, res) => {
         const totalSize = parseInt(response.headers['content-length'], 10);
         let downloadedSize = 0;
         
+        console.log('Starting file write stream:', { filePath, totalSize });
+        
         response.on('data', (chunk) => {
           downloadedSize += chunk.length;
-          // You could emit progress here if needed
+          if (downloadedSize % (1024 * 1024) === 0) { // Log every MB
+            console.log(`Downloaded ${Math.round(downloadedSize / (1024 * 1024))}MB`);
+          }
         });
         
         response.pipe(fileStream);
         
         fileStream.on('finish', () => {
           fileStream.close();
-          console.log(`Download completed: ${title}`);
+          console.log(`Download completed: ${title} (${downloadedSize} bytes)`);
           resolve(filePath);
         });
         
         fileStream.on('error', (err) => {
+          console.error('File stream error:', err);
           fs.unlink(filePath, () => {}); // Delete partial file
           reject(err);
         });
       });
       
       request.on('error', (err) => {
+        console.error('Request error:', err);
         reject(err);
       });
       
       request.setTimeout(300000, () => { // 5 minute timeout
+        console.log('Download timeout reached');
         request.destroy();
         reject(new Error('Download timeout'));
       });
     });
     
     // Wait for download to complete
+    console.log('Waiting for download to complete...');
     await downloadPromise;
+    console.log('Download promise resolved');
     
     // Rescan movies to include the new one
+    console.log('Rescanning movies...');
     scanMovies();
+    console.log('Movies rescanned');
     
     // Generate HLS for the new movie
     const newMovie = MOVIES.find(m => m.id === sanitizedTitle);
+    console.log('Looking for new movie:', { 
+      sanitizedTitle, 
+      found: !!newMovie, 
+      moviesCount: MOVIES.length 
+    });
+    
     if (newMovie && newMovie.movies.length > 0) {
+      console.log('Starting HLS generation for new movie');
       generateHls(newMovie, newMovie.movies[0]);
+    } else {
+      console.log('No new movie found or no movie files');
     }
     
+    console.log('Download endpoint completed successfully');
     res.json({ 
       success: true, 
       message: `Movie "${title}" downloaded successfully`,
@@ -240,12 +304,19 @@ app.post('/api/download', requireToken, async (req, res) => {
     });
     
   } catch (error) {
-    console.error(`Download failed for ${title}:`, error);
+    console.error(`Download failed with error:`, error);
+    console.error('Error stack:', error.stack);
     
     // Clean up partial download
     try {
-      if (fs.existsSync(movieFolder)) {
-        fs.rmSync(movieFolder, { recursive: true, force: true });
+      if (req.body && req.body.title) {
+        const sanitizedTitle = req.body.title.replace(/[<>:"/\\|?*]/g, '_').trim();
+        const movieFolder = path.join(MOVIES_DIR, sanitizedTitle);
+        if (fs.existsSync(movieFolder)) {
+          console.log('Cleaning up partial download folder:', movieFolder);
+          fs.rmSync(movieFolder, { recursive: true, force: true });
+          console.log('Cleanup completed');
+        }
       }
     } catch (cleanupError) {
       console.error('Failed to cleanup partial download:', cleanupError);
@@ -253,7 +324,8 @@ app.post('/api/download', requireToken, async (req, res) => {
     
     res.status(500).json({ 
       error: 'Download failed', 
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
