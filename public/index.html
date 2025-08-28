@@ -106,6 +106,18 @@
           <button type="submit" class="btn" id="downloadBtn">Download Movie</button>
         </form>
         <div id="downloadStatus" class="status hidden"></div>
+        <div id="downloadProgress" style="display: none; margin-top: 10px; padding: 10px; background: #222; border: 1px solid #333; border-radius: 6px; color: #eaeaea; font-size: 14px;">
+          <p>Download Progress: <span id="progressPercent">0%</span></p>
+          <div style="width: 100%; height: 8px; background: #555; border-radius: 4px; margin-top: 5px;">
+            <div id="progressFill" style="width: 0%; height: 100%; background: #007acc; border-radius: 4px;"></div>
+          </div>
+          <p>Status: <span id="downloadStatus">Starting...</span></p>
+          <p>Speed: <span id="downloadSpeed">0 MB/s</span></p>
+          <p>Downloaded: <span id="downloadedSize">0 MB</span></p>
+          <p>ETA: <span id="downloadEta">Unknown</span></p>
+          <p>Log:</p>
+          <textarea id="downloadLog" style="width: 100%; height: 100px; background: #111; color: #eaeaea; border: 1px solid #333; border-radius: 4px; padding: 5px; font-size: 12px; resize: none;"></textarea>
+        </div>
       </div>
       
       <!-- Movies List -->
@@ -242,94 +254,143 @@
         `).join('');
       }
       
-      // Download movie
-      async function downloadMovie(title, url) {
+      // Download movie function
+      async function downloadMovie() {
+        const title = document.getElementById('movieTitle').value.trim();
+        const url = document.getElementById('downloadUrl').value.trim();
+        
+        if (!title || !url) {
+          alert('Please enter both title and URL');
+          return;
+        }
+        
+        const downloadBtn = document.getElementById('downloadBtn');
+        const downloadProgress = document.getElementById('downloadProgress');
+        
         try {
+          // Show progress section
+          downloadProgress.style.display = 'block';
           downloadBtn.disabled = true;
-          downloadBtn.textContent = 'Starting Download...';
-          showStatus('Starting download...', 'info');
+          downloadBtn.textContent = 'Downloading...';
           
+          // Reset progress
+          updateProgress(0, 'Starting download...', 0, 0, 'Unknown');
+          
+          // Start download
           const response = await fetch('/api/download', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
+              'Authorization': `Bearer ${ACCESS_TOKEN}`
             },
-            body: JSON.stringify({ downloadUrl: url, title: title })
+            body: JSON.stringify({ title, url })
           });
+          
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
           
           const result = await response.json();
           
           if (result.success) {
-            showStatus(`Download started: ${result.message}`, 'success');
+            logMessage(`Download started for "${title}"`);
+            logMessage(`Download ID: ${result.downloadId}`);
             
-            // Start monitoring download progress
-            if (result.downloadId) {
-              monitorDownload(result.downloadId, title);
-            }
+            // Start monitoring progress
+            monitorDownloadProgress(result.downloadId);
           } else {
-            showStatus(`Download failed: ${result.error}`, 'error');
+            throw new Error(result.error || 'Download failed');
           }
+          
         } catch (error) {
           console.error('Download error:', error);
-          showStatus(`Download failed: ${error.message}`, 'error');
-        } finally {
+          logMessage(`Error: ${error.message}`);
+          updateProgress(0, 'Download failed', 0, 0, 'N/A');
           downloadBtn.disabled = false;
           downloadBtn.textContent = 'Download Movie';
         }
       }
       
       // Monitor download progress
-      async function monitorDownload(downloadId, title) {
-        const maxAttempts = 300; // 5 minutes with 1-second intervals
-        let attempts = 0;
-        
-        const checkStatus = async () => {
+      async function monitorDownloadProgress(downloadId) {
+        const interval = setInterval(async () => {
           try {
             const response = await fetch(`/api/download/${downloadId}/status`, {
               headers: {
-                'Authorization': `Bearer ${token}`
+                'Authorization': `Bearer ${ACCESS_TOKEN}`
               }
             });
             
-            if (response.ok) {
-              const status = await response.json();
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+            
+            const status = await response.json();
+            
+            // Update progress display
+            updateProgress(
+              status.progress || 0,
+              status.status || 'Unknown',
+              status.speed || 0,
+              status.downloaded || 0,
+              status.eta || 0
+            );
+            
+            // Log status changes
+            if (status.status !== lastStatus) {
+              logMessage(`Status: ${status.status}`);
+              lastStatus = status.status;
+            }
+            
+            // Check if download is complete or failed
+            if (status.status === 'completed' || status.status === 'failed') {
+              clearInterval(interval);
               
               if (status.status === 'completed') {
-                showStatus(`✅ ${title} downloaded successfully! (${formatFileSize(status.fileSize)})`, 'success');
-                // Reload movies after successful download
-                setTimeout(() => loadMovies(), 2000);
-                return;
-              } else if (status.status === 'failed') {
-                showStatus(`❌ Download failed: ${status.error}`, 'error');
-                return;
-              } else if (status.status === 'downloading') {
-                showStatus(`⏳ Downloading ${title}...`, 'info');
-                // Continue monitoring
-                attempts++;
-                if (attempts < maxAttempts) {
-                  setTimeout(checkStatus, 1000);
-                } else {
-                  showStatus(`⏰ Download timeout for ${title}`, 'error');
-                }
+                logMessage('✅ Download completed successfully!');
+                logMessage('🎬 HLS generation started...');
+                
+                // Wait a bit for HLS generation, then refresh movies
+                setTimeout(() => {
+                  loadMovies();
+                  logMessage('🎉 Movie ready for streaming!');
+                }, 2000);
+              } else {
+                logMessage(`❌ Download failed: ${status.error || 'Unknown error'}`);
               }
-            } else {
-              showStatus(`❌ Failed to check download status`, 'error');
+              
+              // Re-enable download button
+              const downloadBtn = document.getElementById('downloadBtn');
+              downloadBtn.disabled = false;
+              downloadBtn.textContent = 'Download Movie';
             }
+            
           } catch (error) {
-            console.error('Status check error:', error);
-            attempts++;
-            if (attempts < maxAttempts) {
-              setTimeout(checkStatus, 1000);
-            } else {
-              showStatus(`❌ Download monitoring failed`, 'error');
-            }
+            console.error('Progress check error:', error);
+            logMessage(`Error checking progress: ${error.message}`);
           }
-        };
-        
-        // Start monitoring
-        checkStatus();
+        }, 1000); // Check every second
       }
+      
+      // Update progress display
+      function updateProgress(progress, status, speed, downloaded, eta) {
+        document.getElementById('progressFill').style.width = `${progress}%`;
+        document.getElementById('downloadStatus').textContent = status;
+        document.getElementById('progressPercent').textContent = `${progress}%`;
+        document.getElementById('downloadSpeed').textContent = speed > 0 ? `${(speed / 1024 / 1024).toFixed(2)} MB/s` : '0 MB/s';
+        document.getElementById('downloadedSize').textContent = downloaded > 0 ? `${(downloaded / 1024 / 1024).toFixed(2)} MB` : '0 MB';
+        document.getElementById('downloadEta').textContent = eta > 0 ? `${Math.floor(eta / 60)}m ${Math.floor(eta % 60)}s` : 'Unknown';
+      }
+      
+      // Log message to download log
+      function logMessage(message) {
+        const log = document.getElementById('downloadLog');
+        const timestamp = new Date().toLocaleTimeString();
+        log.textContent += `[${timestamp}] ${message}\n`;
+        log.scrollTop = log.scrollHeight;
+      }
+      
+      let lastStatus = '';
       
       // Regenerate HLS for a movie
       async function regenerateHls(movieId) {
@@ -467,13 +528,8 @@
       // Event listeners
       downloadForm.addEventListener('submit', (e) => {
         e.preventDefault();
-        const title = document.getElementById('movieTitle').value.trim();
-        const url = document.getElementById('downloadUrl').value.trim();
-        
-        if (title && url) {
-          downloadMovie(title, url);
-          downloadForm.reset();
-        }
+        downloadMovie();
+        downloadForm.reset();
       });
       
       movieSelect.addEventListener('change', (e) => {

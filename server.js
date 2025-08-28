@@ -176,7 +176,7 @@ app.get('/api/movies', (req, res) => {
 // Download status tracking
 let activeDownloads = new Map();
 
-// Download movie endpoint using curl command
+// Download movie endpoint
 app.post('/api/download', requireToken, async (req, res) => {
   console.log('Download endpoint called with:', { 
     body: req.body, 
@@ -286,7 +286,7 @@ app.post('/api/download', requireToken, async (req, res) => {
       filePath 
     });
     
-    // Use curl command for download
+    // Use aria2c command for download
     console.log(`Starting fast download for ${title} to ${filePath}`);
     
     const downloadId = `${sanitizedTitle}_${Date.now()}`;
@@ -295,6 +295,10 @@ app.post('/api/download', requireToken, async (req, res) => {
       title: title,
       status: 'starting',
       progress: 0,
+      downloaded: 0,
+      total: 0,
+      speed: 0,
+      eta: 0,
       startTime: new Date(),
       filePath: filePath,
       url: downloadUrl
@@ -303,7 +307,7 @@ app.post('/api/download', requireToken, async (req, res) => {
     activeDownloads.set(downloadId, downloadInfo);
     
     // Start download in background and respond immediately
-    downloadWithFastMethod(downloadId, downloadUrl, filePath, title, sanitizedTitle);
+    downloadWithProgress(downloadId, downloadUrl, filePath, title, sanitizedTitle);
     
     res.json({ 
       success: true, 
@@ -322,6 +326,156 @@ app.post('/api/download', requireToken, async (req, res) => {
     });
   }
 });
+
+// Download with progress tracking
+async function downloadWithProgress(downloadId, downloadUrl, filePath, title, sanitizedTitle) {
+  try {
+    const downloadInfo = activeDownloads.get(downloadId);
+    if (!downloadInfo) return;
+    
+    downloadInfo.status = 'downloading';
+    activeDownloads.set(downloadId, downloadInfo);
+    
+    console.log(`Starting download for ${downloadId}...`);
+    
+    // Use aria2c for fast downloads with progress
+    const aria2cProcess = spawn('aria2c', [
+      '--max-connection-per-server=16',
+      '--min-split-size=1M',
+      '--split=16',
+      '--continue=true',
+      '--max-download-limit=0',
+      '--file-allocation=none',
+      '--console-log-level=error',
+      '--summary-interval=1',
+      '--progress-bar=true',
+      '-o', path.basename(filePath),
+      '-d', path.dirname(filePath),
+      downloadUrl
+    ]);
+
+    let lastProgress = 0;
+    let lastTime = Date.now();
+    let lastSize = 0;
+
+    aria2cProcess.stdout.on('data', (data) => {
+      const output = data.toString();
+      console.log(`aria2c output: ${output}`);
+      
+      // Parse progress from aria2c output
+      const progressMatch = output.match(/(\d+)%\|/);
+      if (progressMatch) {
+        const progress = parseInt(progressMatch[1]);
+        downloadInfo.progress = progress;
+        
+        // Calculate speed and ETA
+        const currentTime = Date.now();
+        const timeDiff = (currentTime - lastTime) / 1000; // seconds
+        
+        if (timeDiff > 0) {
+          const currentSize = (progress / 100) * (downloadInfo.total || 1000000000); // Estimate total size
+          const sizeDiff = currentSize - lastSize;
+          downloadInfo.speed = sizeDiff / timeDiff; // bytes per second
+          downloadInfo.downloaded = currentSize;
+          
+          if (downloadInfo.speed > 0) {
+            const remaining = (100 - progress) / 100 * (downloadInfo.total || 1000000000);
+            downloadInfo.eta = remaining / downloadInfo.speed; // seconds
+          }
+          
+          lastTime = currentTime;
+          lastSize = currentSize;
+        }
+        
+        console.log(`Progress: ${progress}%`);
+      }
+    });
+
+    aria2cProcess.stderr.on('data', (data) => {
+      const error = data.toString();
+      console.error(`aria2c error: ${error}`);
+      
+      // Check for file size info
+      const sizeMatch = error.match(/Total Size: (\d+)/);
+      if (sizeMatch) {
+        downloadInfo.total = parseInt(sizeMatch[1]);
+        console.log(`Total file size: ${(downloadInfo.total / 1024 / 1024).toFixed(2)} MB`);
+      }
+    });
+
+    aria2cProcess.on('close', async (code) => {
+      console.log(`aria2c process exited with code ${code}`);
+      
+      if (code === 0) {
+        // Download completed successfully
+        downloadInfo.status = 'completed';
+        downloadInfo.progress = 100;
+        downloadInfo.downloaded = downloadInfo.total;
+        downloadInfo.speed = 0;
+        downloadInfo.eta = 0;
+        
+        console.log(`Download completed for ${downloadId}`);
+        
+        // Verify file exists and has content
+        if (fs.existsSync(filePath)) {
+          const stats = fs.statSync(filePath);
+          if (stats.size > 0) {
+            console.log(`File verified: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+            
+            // Generate HLS
+            downloadInfo.status = 'generating_hls';
+            try {
+              await generateHlsForMovie(sanitizedTitle);
+              downloadInfo.status = 'completed';
+              console.log(`HLS generated for ${title}`);
+            } catch (hlsError) {
+              console.error(`HLS generation failed for ${title}:`, hlsError);
+              downloadInfo.status = 'hls_failed';
+              downloadInfo.error = `HLS generation failed: ${hlsError.message}`;
+            }
+          } else {
+            console.error(`Download completed but file is empty: ${filePath}`);
+            downloadInfo.status = 'failed';
+            downloadInfo.error = 'Download completed but file is empty';
+          }
+        } else {
+          console.error(`Download completed but file not found: ${filePath}`);
+          downloadInfo.status = 'failed';
+          downloadInfo.error = 'Download completed but file not found';
+        }
+      } else {
+        // Download failed
+        downloadInfo.status = 'failed';
+        downloadInfo.error = `aria2c exited with code ${code}`;
+        console.error(`Download failed for ${downloadId} with code ${code}`);
+        
+        // Clean up partial file
+        if (fs.existsSync(filePath)) {
+          try {
+            fs.unlinkSync(filePath);
+            console.log(`Cleaned up partial file: ${filePath}`);
+          } catch (cleanupError) {
+            console.error(`Failed to cleanup partial file:`, cleanupError);
+          }
+        }
+      }
+      
+      // Update movies list
+      await rescanMovies();
+    });
+
+    aria2cProcess.on('error', (error) => {
+      console.error(`Failed to start aria2c:`, error);
+      downloadInfo.status = 'failed';
+      downloadInfo.error = `Failed to start aria2c: ${error.message}`;
+    });
+
+  } catch (error) {
+    console.error(`Download error for ${downloadId}:`, error);
+    downloadInfo.status = 'failed';
+    downloadInfo.error = error.message;
+  }
+}
 
 // Function to handle fast download using multiple methods
 async function downloadWithFastMethod(downloadId, downloadUrl, filePath, title, sanitizedTitle) {
