@@ -30,6 +30,19 @@ services:
     networks:
       - app
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: stream-cloudflared
+    depends_on:
+      - frontend
+    # Create a Named Tunnel in Cloudflare and set CLOUDFLARE_TUNNEL_TOKEN in .env
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    networks:
+      - app
+
 volumes:
   hls_data:
 
