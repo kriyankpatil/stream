@@ -5,6 +5,7 @@ const os = require('os');
 const { spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
+const url = require('url');
 
 // Use system-installed ffmpeg (installed via apt in Dockerfile)
 let ffmpegExecutable = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -175,50 +176,23 @@ app.get('/api/movies', (req, res) => {
 // Download status tracking
 let activeDownloads = new Map();
 
-// Download movie endpoint
+// Download movie endpoint using curl command
 app.post('/api/download', requireToken, async (req, res) => {
   console.log('Download endpoint called with:', { 
     body: req.body, 
     headers: req.headers,
-    url: req.url,
-    method: req.method,
-    contentType: req.get('Content-Type')
+    url: req.url 
   });
   
   try {
-    const { url, title } = req.body;
+    const { downloadUrl, title } = req.body;
     
-    console.log('Extracted parameters:', { url, title, bodyKeys: Object.keys(req.body) });
-    
-    if (!url || !title) {
-      console.log('Missing required fields:', { url: !!url, title: !!title, urlType: typeof url, titleType: typeof title });
-      return res.status(400).json({ 
-        error: 'Download URL and title are required',
-        received: { url: !!url, title: !!title },
-        expected: { url: 'string', title: 'string' }
-      });
+    if (!downloadUrl || !title) {
+      console.log('Missing required fields:', { downloadUrl: !!downloadUrl, title: !!title });
+      return res.status(400).json({ error: 'Download URL and title are required' });
     }
     
-    if (typeof url !== 'string' || typeof title !== 'string') {
-      console.log('Invalid field types:', { urlType: typeof url, titleType: typeof title });
-      return res.status(400).json({ 
-        error: 'URL and title must be strings',
-        received: { urlType: typeof url, titleType: typeof title }
-      });
-    }
-    
-    // Validate URL format
-    try {
-      new URL(url);
-    } catch (urlError) {
-      console.log('Invalid URL format:', url, urlError.message);
-      return res.status(400).json({ 
-        error: 'Invalid URL format',
-        details: urlError.message
-      });
-    }
-    
-    console.log('Processing download request:', { title, url });
+    console.log('Processing download request:', { title, downloadUrl });
     
     // Sanitize title for folder name
     const sanitizedTitle = title.replace(/[<>:"/\\|?*]/g, '_').trim();
@@ -276,7 +250,7 @@ app.post('/api/download', requireToken, async (req, res) => {
         // Try to create with different permissions
         try {
           fs.mkdirSync(movieFolder, { recursive: true, mode: 0o777 });
-          console.log('Movie folder created successfully');
+          console.log('Movie folder created with full permissions');
         } catch (retryError) {
           console.error('Failed to create movie folder even with full permissions:', retryError);
           throw new Error(`Cannot create movie folder: ${retryError.message}`);
@@ -300,7 +274,7 @@ app.post('/api/download', requireToken, async (req, res) => {
     }
     
     // Determine file extension from URL
-    const urlPath = new URL(url).pathname;
+    const urlPath = url.parse(downloadUrl).pathname;
     const extension = path.extname(urlPath) || '.mp4';
     const fileName = `movie${extension}`;
     const filePath = path.join(movieFolder, fileName);
@@ -312,7 +286,7 @@ app.post('/api/download', requireToken, async (req, res) => {
       filePath 
     });
     
-    // Use aria2c command for download
+    // Use curl command for download
     console.log(`Starting fast download for ${title} to ${filePath}`);
     
     const downloadId = `${sanitizedTitle}_${Date.now()}`;
@@ -321,24 +295,15 @@ app.post('/api/download', requireToken, async (req, res) => {
       title: title,
       status: 'starting',
       progress: 0,
-      downloaded: 0,
-      total: 0,
-      speed: 0,
-      eta: 0,
       startTime: new Date(),
       filePath: filePath,
-      url: url
+      url: downloadUrl
     };
     
     activeDownloads.set(downloadId, downloadInfo);
     
-    // Log download info storage
-    console.log(`Download info stored in Map with ID: ${downloadId}`);
-    console.log(`Current active downloads count: ${activeDownloads.size}`);
-    console.log(`Download info:`, downloadInfo);
-    
     // Start download in background and respond immediately
-    downloadWithProgress(downloadId, url, filePath, title, sanitizedTitle);
+    downloadWithFastMethod(downloadId, downloadUrl, filePath, title, sanitizedTitle);
     
     res.json({ 
       success: true, 
@@ -357,156 +322,6 @@ app.post('/api/download', requireToken, async (req, res) => {
     });
   }
 });
-
-// Download with progress tracking
-async function downloadWithProgress(downloadId, url, filePath, title, sanitizedTitle) {
-  try {
-    const downloadInfo = activeDownloads.get(downloadId);
-    if (!downloadInfo) return;
-    
-    downloadInfo.status = 'downloading';
-    activeDownloads.set(downloadId, downloadInfo);
-    
-    console.log(`Starting download for ${downloadId}...`);
-    
-    // Use aria2c for fast downloads with progress
-    const aria2cProcess = spawn('aria2c', [
-      '--max-connection-per-server=16',
-      '--min-split-size=1M',
-      '--split=16',
-      '--continue=true',
-      '--max-download-limit=0',
-      '--file-allocation=none',
-      '--console-log-level=error',
-      '--summary-interval=1',
-      '--progress-bar=true',
-      '-o', path.basename(filePath),
-      '-d', path.dirname(filePath),
-      url
-    ]);
-
-    let lastProgress = 0;
-    let lastTime = Date.now();
-    let lastSize = 0;
-
-    aria2cProcess.stdout.on('data', (data) => {
-      const output = data.toString();
-      console.log(`aria2c output: ${output}`);
-      
-      // Parse progress from aria2c output
-      const progressMatch = output.match(/(\d+)%\|/);
-      if (progressMatch) {
-        const progress = parseInt(progressMatch[1]);
-        downloadInfo.progress = progress;
-        
-        // Calculate speed and ETA
-        const currentTime = Date.now();
-        const timeDiff = (currentTime - lastTime) / 1000; // seconds
-        
-        if (timeDiff > 0) {
-          const currentSize = (progress / 100) * (downloadInfo.total || 1000000000); // Estimate total size
-          const sizeDiff = currentSize - lastSize;
-          downloadInfo.speed = sizeDiff / timeDiff; // bytes per second
-          downloadInfo.downloaded = currentSize;
-          
-          if (downloadInfo.speed > 0) {
-            const remaining = (100 - progress) / 100 * (downloadInfo.total || 1000000000);
-            downloadInfo.eta = remaining / downloadInfo.speed; // seconds
-          }
-          
-          lastTime = currentTime;
-          lastSize = currentSize;
-        }
-        
-        console.log(`Progress: ${progress}%`);
-      }
-    });
-
-    aria2cProcess.stderr.on('data', (data) => {
-      const error = data.toString();
-      console.error(`aria2c error: ${error}`);
-      
-      // Check for file size info
-      const sizeMatch = error.match(/Total Size: (\d+)/);
-      if (sizeMatch) {
-        downloadInfo.total = parseInt(sizeMatch[1]);
-        console.log(`Total file size: ${(downloadInfo.total / 1024 / 1024).toFixed(2)} MB`);
-      }
-    });
-
-    aria2cProcess.on('close', async (code) => {
-      console.log(`aria2c process exited with code ${code}`);
-      
-      if (code === 0) {
-        // Download completed successfully
-        downloadInfo.status = 'completed';
-        downloadInfo.progress = 100;
-        downloadInfo.downloaded = downloadInfo.total;
-        downloadInfo.speed = 0;
-        downloadInfo.eta = 0;
-        
-        console.log(`Download completed for ${downloadId}`);
-        
-        // Verify file exists and has content
-        if (fs.existsSync(filePath)) {
-          const stats = fs.statSync(filePath);
-          if (stats.size > 0) {
-            console.log(`File verified: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
-            
-            // Generate HLS
-            downloadInfo.status = 'generating_hls';
-            try {
-              await generateHlsForMovie(sanitizedTitle);
-              downloadInfo.status = 'completed';
-              console.log(`HLS generated for ${title}`);
-            } catch (hlsError) {
-              console.error(`HLS generation failed for ${title}:`, hlsError);
-              downloadInfo.status = 'hls_failed';
-              downloadInfo.error = `HLS generation failed: ${hlsError.message}`;
-            }
-          } else {
-            console.error(`Download completed but file is empty: ${filePath}`);
-            downloadInfo.status = 'failed';
-            downloadInfo.error = 'Download completed but file is empty';
-          }
-        } else {
-          console.error(`Download completed but file not found: ${filePath}`);
-          downloadInfo.status = 'failed';
-          downloadInfo.error = 'Download completed but file not found';
-        }
-      } else {
-        // Download failed
-        downloadInfo.status = 'failed';
-        downloadInfo.error = `aria2c exited with code ${code}`;
-        console.error(`Download failed for ${downloadId} with code ${code}`);
-        
-        // Clean up partial file
-        if (fs.existsSync(filePath)) {
-          try {
-            fs.unlinkSync(filePath);
-            console.log(`Cleaned up partial file: ${filePath}`);
-          } catch (cleanupError) {
-            console.error(`Failed to cleanup partial file:`, cleanupError);
-          }
-        }
-      }
-      
-      // Update movies list
-      await rescanMovies();
-    });
-
-    aria2cProcess.on('error', (error) => {
-      console.error(`Failed to start aria2c:`, error);
-      downloadInfo.status = 'failed';
-      downloadInfo.error = `Failed to start aria2c: ${error.message}`;
-    });
-
-  } catch (error) {
-    console.error(`Download error for ${downloadId}:`, error);
-    downloadInfo.status = 'failed';
-    downloadInfo.error = error.message;
-  }
-}
 
 // Function to handle fast download using multiple methods
 async function downloadWithFastMethod(downloadId, downloadUrl, filePath, title, sanitizedTitle) {
@@ -674,89 +489,19 @@ async function downloadWithFastMethod(downloadId, downloadUrl, filePath, title, 
 // Get download status
 app.get('/api/download/:downloadId/status', requireToken, (req, res) => {
   const { downloadId } = req.params;
-  
-  console.log(`Status check requested for download ID: ${downloadId}`);
-  console.log(`Current active downloads count: ${activeDownloads.size}`);
-  console.log(`Active download IDs: ${Array.from(activeDownloads.keys())}`);
-  
   const downloadInfo = activeDownloads.get(downloadId);
   
   if (!downloadInfo) {
-    console.log(`Download not found: ${downloadId}`);
-    console.log(`Available downloads:`, Array.from(activeDownloads.keys()));
-    return res.status(404).json({ 
-      error: 'Download not found',
-      requestedId: downloadId,
-      availableIds: Array.from(activeDownloads.keys()),
-      totalDownloads: activeDownloads.size
-    });
+    return res.status(404).json({ error: 'Download not found' });
   }
   
-  console.log(`Download found: ${downloadId}, status: ${downloadInfo.status}`);
-  
-  // Calculate additional info
-  const elapsed = Date.now() - downloadInfo.startTime;
-  const elapsedSeconds = Math.floor(elapsed / 1000);
-  
-  const response = {
-    ...downloadInfo,
-    elapsed: elapsedSeconds,
-    speedFormatted: downloadInfo.speed > 0 ? `${(downloadInfo.speed / 1024 / 1024).toFixed(2)} MB/s` : '0 MB/s',
-    downloadedFormatted: downloadInfo.downloaded > 0 ? `${(downloadInfo.downloaded / 1024 / 1024).toFixed(2)} MB` : '0 MB',
-    totalFormatted: downloadInfo.total > 0 ? `${(downloadInfo.total / 1024 / 1024).toFixed(2)} MB` : 'Unknown',
-    etaFormatted: downloadInfo.eta > 0 ? `${Math.floor(downloadInfo.eta / 60)}m ${Math.floor(downloadInfo.eta % 60)}s` : 'Unknown'
-  };
-  
-  res.json(response);
+  res.json(downloadInfo);
 });
 
 // Get all active downloads
 app.get('/api/downloads', requireToken, (req, res) => {
   const downloads = Array.from(activeDownloads.values());
   res.json(downloads);
-});
-
-// Debug endpoint to check active downloads
-app.get('/api/debug/downloads', requireToken, (req, res) => {
-  const downloads = Array.from(activeDownloads.values());
-  const downloadIds = Array.from(activeDownloads.keys());
-  
-  res.json({
-    activeDownloadsCount: activeDownloads.size,
-    downloadIds: downloadIds,
-    downloads: downloads,
-    mapSize: activeDownloads.size,
-    mapKeys: downloadIds
-  });
-});
-
-// Test endpoint to add a dummy download
-app.post('/api/test/download', requireToken, (req, res) => {
-  const testId = `test_${Date.now()}`;
-  const testDownload = {
-    id: testId,
-    title: 'Test Download',
-    status: 'testing',
-    progress: 50,
-    downloaded: 0,
-    total: 0,
-    speed: 0,
-    eta: 0,
-    startTime: new Date(),
-    filePath: '/test/path',
-    url: 'https://test.com'
-  };
-  
-  activeDownloads.set(testId, testDownload);
-  console.log(`Test download added: ${testId}`);
-  console.log(`Current active downloads count: ${activeDownloads.size}`);
-  
-  res.json({ 
-    success: true, 
-    message: 'Test download added',
-    downloadId: testId,
-    totalDownloads: activeDownloads.size
-  });
 });
 
 // Delete movie endpoint
