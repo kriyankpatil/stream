@@ -16,7 +16,6 @@ services:
     expose:
       - "3000"
     restart: unless-stopped
-    user: "1000:1000"  # Use host user ID for proper permissions
 
   frontend:
     image: nginx:stable-alpine

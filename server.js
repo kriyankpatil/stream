@@ -209,7 +209,7 @@ app.post('/api/download', requireToken, async (req, res) => {
     if (!fs.existsSync(MOVIES_DIR)) {
       console.log('Creating movies directory:', MOVIES_DIR);
       try {
-        fs.mkdirSync(MOVIES_DIR, { recursive: true, mode: 0o755 });
+        fs.mkdirSync(MOVIES_DIR, { recursive: true, mode: 0o777 });
         console.log('Movies directory created successfully');
       } catch (mkdirError) {
         console.error('Failed to create movies directory:', mkdirError);
@@ -222,13 +222,28 @@ app.post('/api/download', requireToken, async (req, res) => {
           throw new Error(`Cannot create movies directory: ${retryError.message}`);
         }
       }
+    } else {
+      // Ensure existing directory has proper permissions
+      try {
+        fs.accessSync(MOVIES_DIR, fs.constants.W_OK);
+        console.log('Movies directory is writable');
+      } catch (accessError) {
+        console.log('Fixing movies directory permissions...');
+        try {
+          fs.chmodSync(MOVIES_DIR, 0o777);
+          console.log('Movies directory permissions fixed');
+        } catch (chmodError) {
+          console.error('Failed to fix movies directory permissions:', chmodError);
+          throw new Error(`Cannot write to movies directory: ${chmodError.message}`);
+        }
+      }
     }
     
     // Create movie folder
     if (!fs.existsSync(movieFolder)) {
       console.log('Creating movie folder:', movieFolder);
       try {
-        fs.mkdirSync(movieFolder, { recursive: true, mode: 0o755 });
+        fs.mkdirSync(movieFolder, { recursive: true, mode: 0o777 });
         console.log('Movie folder created successfully');
       } catch (mkdirError) {
         console.error('Failed to create movie folder:', mkdirError);
@@ -239,6 +254,21 @@ app.post('/api/download', requireToken, async (req, res) => {
         } catch (retryError) {
           console.error('Failed to create movie folder even with full permissions:', retryError);
           throw new Error(`Cannot create movie folder: ${retryError.message}`);
+        }
+      }
+    } else {
+      // Ensure existing folder has proper permissions
+      try {
+        fs.accessSync(movieFolder, fs.constants.W_OK);
+        console.log('Movie folder is writable');
+      } catch (accessError) {
+        console.log('Fixing movie folder permissions...');
+        try {
+          fs.chmodSync(movieFolder, 0o777);
+          console.log('Movie folder permissions fixed');
+        } catch (chmodError) {
+          console.error('Failed to fix movie folder permissions:', chmodError);
+          throw new Error(`Cannot write to movie folder: ${chmodError.message}`);
         }
       }
     }
@@ -685,25 +715,50 @@ app.listen(PORT, HOST, () => {
     console.log(`LAN access:        http://${lan}:${PORT}`);
   }
   
-  // Ensure all necessary directories exist
+  // Ensure all necessary directories exist with proper permissions
   try {
+    console.log('Setting up directories with proper permissions...');
+    
+    // Create movies directory if it doesn't exist
     if (!fs.existsSync(MOVIES_DIR)) {
       console.log('Creating movies directory on startup:', MOVIES_DIR);
-      fs.mkdirSync(MOVIES_DIR, { recursive: true, mode: 0o755 });
+      fs.mkdirSync(MOVIES_DIR, { recursive: true, mode: 0o777 });
       console.log('Movies directory created successfully on startup');
+    } else {
+      // Ensure existing directory has proper permissions
+      try {
+        fs.accessSync(MOVIES_DIR, fs.constants.W_OK);
+        console.log('Movies directory is writable');
+      } catch (accessError) {
+        console.log('Fixing movies directory permissions...');
+        fs.chmodSync(MOVIES_DIR, 0o777);
+        console.log('Movies directory permissions fixed');
+      }
     }
     
     // Ensure public directory exists
     const publicDir = path.join(__dirname, 'public');
     if (!fs.existsSync(publicDir)) {
       console.log('Creating public directory on startup:', publicDir);
-      fs.mkdirSync(publicDir, { recursive: true, mode: 0o755 });
+      fs.mkdirSync(publicDir, { recursive: true, mode: 0o777 });
       console.log('Public directory created successfully on startup');
     }
     
-    console.log('All necessary directories verified/created');
+    // Test directory creation
+    const testDir = path.join(MOVIES_DIR, 'test_permissions');
+    try {
+      fs.mkdirSync(testDir, { recursive: true, mode: 0o777 });
+      fs.rmdirSync(testDir);
+      console.log('✅ Directory permissions test passed');
+    } catch (testError) {
+      console.error('❌ Directory permissions test failed:', testError);
+      throw new Error('Cannot create directories - permission issue detected');
+    }
+    
+    console.log('All necessary directories verified/created with proper permissions');
   } catch (dirError) {
-    console.error('Failed to create directories on startup:', dirError);
+    console.error('Failed to setup directories on startup:', dirError);
+    console.error('Server may not work properly for downloads');
   }
   
   // Generate HLS for all movies
