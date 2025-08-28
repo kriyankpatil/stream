@@ -156,7 +156,10 @@ app.get('/api/movies', (req, res) => {
   })));
 });
 
-// Download movie endpoint
+// Download status tracking
+let activeDownloads = new Map();
+
+// Download movie endpoint using curl command
 app.post('/api/download', requireToken, async (req, res) => {
   console.log('Download endpoint called with:', { 
     body: req.body, 
@@ -212,69 +215,117 @@ app.post('/api/download', requireToken, async (req, res) => {
       filePath 
     });
     
-    // Start download
-    console.log(`Starting download: ${title} from ${downloadUrl}`);
+    // Use curl command for download
+    console.log(`Starting curl download: ${title} from ${downloadUrl}`);
+    
+    const downloadId = `${sanitizedTitle}_${Date.now()}`;
+    const downloadInfo = {
+      id: downloadId,
+      title: title,
+      status: 'starting',
+      progress: 0,
+      startTime: new Date(),
+      filePath: filePath,
+      url: downloadUrl
+    };
+    
+    activeDownloads.set(downloadId, downloadInfo);
+    
+    const curlCommand = `curl -L -o "${filePath}" "${downloadUrl}"`;
+    console.log('Executing curl command:', curlCommand);
+    
+    // Start download in background and respond immediately
+    downloadWithCurl(downloadId, downloadUrl, filePath, title, sanitizedTitle);
+    
+    res.json({ 
+      success: true, 
+      message: `Download started for "${title}"`,
+      downloadId: downloadId,
+      status: 'started'
+    });
+    
+  } catch (error) {
+    console.error(`Download setup failed with error:`, error);
+    console.error('Error stack:', error.stack);
+    
+    res.status(500).json({ 
+      error: 'Download setup failed', 
+      details: error.message
+    });
+  }
+});
+
+// Function to handle curl download
+async function downloadWithCurl(downloadId, downloadUrl, filePath, title, sanitizedTitle) {
+  try {
+    const downloadInfo = activeDownloads.get(downloadId);
+    if (!downloadInfo) return;
+    
+    downloadInfo.status = 'downloading';
+    activeDownloads.set(downloadId, downloadInfo);
     
     const downloadPromise = new Promise((resolve, reject) => {
-      const protocol = downloadUrl.startsWith('https:') ? https : http;
-      console.log('Using protocol:', protocol === https ? 'https' : 'http');
-      
-      const request = protocol.get(downloadUrl, (response) => {
-        console.log('Download response received:', { 
-          statusCode: response.statusCode, 
-          statusMessage: response.statusMessage,
-          headers: response.headers 
-        });
-        
-        if (response.statusCode !== 200) {
-          reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
-          return;
-        }
-        
-        const fileStream = fs.createWriteStream(filePath);
-        const totalSize = parseInt(response.headers['content-length'], 10);
-        let downloadedSize = 0;
-        
-        console.log('Starting file write stream:', { filePath, totalSize });
-        
-        response.on('data', (chunk) => {
-          downloadedSize += chunk.length;
-          if (downloadedSize % (1024 * 1024) === 0) { // Log every MB
-            console.log(`Downloaded ${Math.round(downloadedSize / (1024 * 1024))}MB`);
-          }
-        });
-        
-        response.pipe(fileStream);
-        
-        fileStream.on('finish', () => {
-          fileStream.close();
-          console.log(`Download completed: ${title} (${downloadedSize} bytes)`);
-          resolve(filePath);
-        });
-        
-        fileStream.on('error', (err) => {
-          console.error('File stream error:', err);
-          fs.unlink(filePath, () => {}); // Delete partial file
-          reject(err);
-        });
+      const curlProcess = spawn('curl', ['-L', '-o', filePath, downloadUrl], {
+        stdio: ['pipe', 'pipe', 'pipe']
       });
       
-      request.on('error', (err) => {
-        console.error('Request error:', err);
+      let stdout = '';
+      let stderr = '';
+      
+      curlProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+        console.log('Curl stdout:', data.toString().trim());
+      });
+      
+      curlProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+        console.log('Curl stderr:', data.toString().trim());
+      });
+      
+      curlProcess.on('close', (code) => {
+        console.log(`Curl process exited with code ${code}`);
+        if (code === 0) {
+          console.log(`Download completed: ${title}`);
+          resolve(filePath);
+        } else {
+          reject(new Error(`Curl failed with code ${code}. Stderr: ${stderr}`));
+        }
+      });
+      
+      curlProcess.on('error', (err) => {
+        console.error('Failed to start curl process:', err);
         reject(err);
       });
       
-      request.setTimeout(300000, () => { // 5 minute timeout
-        console.log('Download timeout reached');
-        request.destroy();
-        reject(new Error('Download timeout'));
-      });
+      // Set timeout for curl process
+      setTimeout(() => {
+        if (!curlProcess.killed) {
+          console.log('Curl process timeout, killing process');
+          curlProcess.kill('SIGKILL');
+          reject(new Error('Download timeout'));
+        }
+      }, 1800000); // 30 minutes timeout
     });
     
     // Wait for download to complete
-    console.log('Waiting for download to complete...');
+    console.log('Waiting for curl download to complete...');
     await downloadPromise;
-    console.log('Download promise resolved');
+    console.log('Curl download promise resolved');
+    
+    // Verify file was downloaded
+    if (!fs.existsSync(filePath)) {
+      throw new Error('File was not downloaded successfully');
+    }
+    
+    const fileStats = fs.statSync(filePath);
+    console.log(`File downloaded successfully: ${filePath} (${fileStats.size} bytes)`);
+    
+    // Update download status
+    downloadInfo.status = 'completed';
+    downloadInfo.progress = 100;
+    downloadInfo.completionTime = new Date();
+    downloadInfo.fileSize = fileStats.size;
+    activeDownloads.set(downloadId, downloadInfo);
     
     // Rescan movies to include the new one
     console.log('Rescanning movies...');
@@ -296,38 +347,50 @@ app.post('/api/download', requireToken, async (req, res) => {
       console.log('No new movie found or no movie files');
     }
     
-    console.log('Download endpoint completed successfully');
-    res.json({ 
-      success: true, 
-      message: `Movie "${title}" downloaded successfully`,
-      movieId: sanitizedTitle
-    });
+    console.log('Download process completed successfully');
     
   } catch (error) {
     console.error(`Download failed with error:`, error);
     console.error('Error stack:', error.stack);
     
+    // Update download status
+    const downloadInfo = activeDownloads.get(downloadId);
+    if (downloadInfo) {
+      downloadInfo.status = 'failed';
+      downloadInfo.error = error.message;
+      downloadInfo.completionTime = new Date();
+      activeDownloads.set(downloadId, downloadInfo);
+    }
+    
     // Clean up partial download
     try {
-      if (req.body && req.body.title) {
-        const sanitizedTitle = req.body.title.replace(/[<>:"/\\|?*]/g, '_').trim();
-        const movieFolder = path.join(MOVIES_DIR, sanitizedTitle);
-        if (fs.existsSync(movieFolder)) {
-          console.log('Cleaning up partial download folder:', movieFolder);
-          fs.rmSync(movieFolder, { recursive: true, force: true });
-          console.log('Cleanup completed');
-        }
+      if (fs.existsSync(filePath)) {
+        console.log('Cleaning up partial download file:', filePath);
+        fs.unlinkSync(filePath);
+        console.log('Cleanup completed');
       }
     } catch (cleanupError) {
       console.error('Failed to cleanup partial download:', cleanupError);
     }
-    
-    res.status(500).json({ 
-      error: 'Download failed', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
   }
+}
+
+// Get download status
+app.get('/api/download/:downloadId/status', requireToken, (req, res) => {
+  const { downloadId } = req.params;
+  const downloadInfo = activeDownloads.get(downloadId);
+  
+  if (!downloadInfo) {
+    return res.status(404).json({ error: 'Download not found' });
+  }
+  
+  res.json(downloadInfo);
+});
+
+// Get all active downloads
+app.get('/api/downloads', requireToken, (req, res) => {
+  const downloads = Array.from(activeDownloads.values());
+  res.json(downloads);
 });
 
 // Delete movie endpoint

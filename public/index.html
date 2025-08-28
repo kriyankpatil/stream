@@ -246,7 +246,7 @@
       async function downloadMovie(title, url) {
         try {
           downloadBtn.disabled = true;
-          downloadBtn.textContent = 'Downloading...';
+          downloadBtn.textContent = 'Starting Download...';
           showStatus('Starting download...', 'info');
           
           const response = await fetch('/api/download', {
@@ -261,9 +261,12 @@
           const result = await response.json();
           
           if (result.success) {
-            showStatus(result.message, 'success');
-            // Reload movies after successful download
-            setTimeout(() => loadMovies(), 2000);
+            showStatus(`Download started: ${result.message}`, 'success');
+            
+            // Start monitoring download progress
+            if (result.downloadId) {
+              monitorDownload(result.downloadId, title);
+            }
           } else {
             showStatus(`Download failed: ${result.error}`, 'error');
           }
@@ -274,6 +277,58 @@
           downloadBtn.disabled = false;
           downloadBtn.textContent = 'Download Movie';
         }
+      }
+      
+      // Monitor download progress
+      async function monitorDownload(downloadId, title) {
+        const maxAttempts = 300; // 5 minutes with 1-second intervals
+        let attempts = 0;
+        
+        const checkStatus = async () => {
+          try {
+            const response = await fetch(`/api/download/${downloadId}/status`, {
+              headers: {
+                'Authorization': `Bearer ${token}`
+              }
+            });
+            
+            if (response.ok) {
+              const status = await response.json();
+              
+              if (status.status === 'completed') {
+                showStatus(`✅ ${title} downloaded successfully! (${formatFileSize(status.fileSize)})`, 'success');
+                // Reload movies after successful download
+                setTimeout(() => loadMovies(), 2000);
+                return;
+              } else if (status.status === 'failed') {
+                showStatus(`❌ Download failed: ${status.error}`, 'error');
+                return;
+              } else if (status.status === 'downloading') {
+                showStatus(`⏳ Downloading ${title}...`, 'info');
+                // Continue monitoring
+                attempts++;
+                if (attempts < maxAttempts) {
+                  setTimeout(checkStatus, 1000);
+                } else {
+                  showStatus(`⏰ Download timeout for ${title}`, 'error');
+                }
+              }
+            } else {
+              showStatus(`❌ Failed to check download status`, 'error');
+            }
+          } catch (error) {
+            console.error('Status check error:', error);
+            attempts++;
+            if (attempts < maxAttempts) {
+              setTimeout(checkStatus, 1000);
+            } else {
+              showStatus(`❌ Download monitoring failed`, 'error');
+            }
+          }
+        };
+        
+        // Start monitoring
+        checkStatus();
       }
       
       // Regenerate HLS for a movie
