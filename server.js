@@ -44,27 +44,46 @@ function scanMovies() {
       const movieFolders = fs.readdirSync(MOVIES_DIR, { withFileTypes: true })
         .filter(e => e.isDirectory())
         .map(folder => {
-          const folderPath = path.join(MOVIES_DIR, folder.name);
-          const movieFiles = fs.readdirSync(folderPath, { withFileTypes: true })
-            .filter(e => e.isFile())
-            .filter(e => SUPPORTED_EXTENSIONS.has(path.extname(e.name).toLowerCase()))
-            .map(f => ({
-              name: path.parse(f.name).name,
-              path: path.join(folderPath, f.name),
-              extension: path.extname(f.name),
-              size: fs.statSync(path.join(folderPath, f.name)).size
-            }));
-          
-          return {
-            id: folder.name,
-            name: folder.name,
-            folder: folderPath,
-            movies: movieFiles,
-            hlsPath: path.join(folderPath, 'hls'),
-            createdAt: fs.statSync(folderPath).birthtime
-          };
+          try {
+            const folderPath = path.join(MOVIES_DIR, folder.name);
+            const movieFiles = fs.readdirSync(folderPath, { withFileTypes: true })
+              .filter(e => e.isFile())
+              .filter(e => SUPPORTED_EXTENSIONS.has(path.extname(e.name).toLowerCase()))
+              .map(f => {
+                try {
+                  const filePath = path.join(folderPath, f.name);
+                  const stats = fs.statSync(filePath);
+                  return {
+                    name: path.parse(f.name).name,
+                    path: filePath,
+                    extension: path.extname(f.name),
+                    size: stats.size
+                  };
+                } catch (fileError) {
+                  console.warn(`Error reading file ${f.name}:`, fileError);
+                  return null;
+                }
+              })
+              .filter(f => f !== null); // Remove any failed files
+            
+            if (movieFiles.length === 0) {
+              return null; // Skip folders with no valid movie files
+            }
+            
+            return {
+              id: folder.name,
+              name: folder.name,
+              folder: folderPath,
+              movies: movieFiles,
+              hlsPath: path.join(folderPath, 'hls'),
+              createdAt: fs.statSync(folderPath).birthtime
+            };
+          } catch (folderError) {
+            console.warn(`Error reading folder ${folder.name}:`, folderError);
+            return null;
+          }
         })
-        .filter(movie => movie.movies.length > 0);
+        .filter(movie => movie !== null); // Remove any failed folders
       
       MOVIES = movieFolders;
       console.log(`Found ${MOVIES.length} movie folders:`, MOVIES.map(m => `${m.name} (${m.movies.length} movies)`));
@@ -74,12 +93,15 @@ function scanMovies() {
       try {
         fs.mkdirSync(MOVIES_DIR, { recursive: true });
         console.log('Created movies directory');
+        MOVIES = []; // Initialize empty movies array
       } catch (e) {
         console.error('Failed to create movies directory:', e);
+        MOVIES = []; // Initialize empty movies array even if creation fails
       }
     }
   } catch (e) {
     console.warn(`Error reading movies directory:`, e);
+    MOVIES = []; // Initialize empty movies array on any error
   }
 }
 
@@ -136,9 +158,16 @@ app.post('/api/download', requireToken, async (req, res) => {
   const movieFolder = path.join(MOVIES_DIR, sanitizedTitle);
   
   try {
+    // Ensure movies directory exists
+    if (!fs.existsSync(MOVIES_DIR)) {
+      fs.mkdirSync(MOVIES_DIR, { recursive: true });
+      console.log('Created movies directory');
+    }
+    
     // Create movie folder
     if (!fs.existsSync(movieFolder)) {
       fs.mkdirSync(movieFolder, { recursive: true });
+      console.log(`Created movie folder: ${movieFolder}`);
     }
     
     // Determine file extension from URL
