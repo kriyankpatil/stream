@@ -208,15 +208,39 @@ app.post('/api/download', requireToken, async (req, res) => {
     // Ensure movies directory exists
     if (!fs.existsSync(MOVIES_DIR)) {
       console.log('Creating movies directory:', MOVIES_DIR);
-      fs.mkdirSync(MOVIES_DIR, { recursive: true });
-      console.log('Movies directory created successfully');
+      try {
+        fs.mkdirSync(MOVIES_DIR, { recursive: true, mode: 0o755 });
+        console.log('Movies directory created successfully');
+      } catch (mkdirError) {
+        console.error('Failed to create movies directory:', mkdirError);
+        // Try to create with different permissions
+        try {
+          fs.mkdirSync(MOVIES_DIR, { recursive: true, mode: 0o777 });
+          console.log('Movies directory created with full permissions');
+        } catch (retryError) {
+          console.error('Failed to create movies directory even with full permissions:', retryError);
+          throw new Error(`Cannot create movies directory: ${retryError.message}`);
+        }
+      }
     }
     
     // Create movie folder
     if (!fs.existsSync(movieFolder)) {
       console.log('Creating movie folder:', movieFolder);
-      fs.mkdirSync(movieFolder, { recursive: true });
-      console.log('Movie folder created successfully');
+      try {
+        fs.mkdirSync(movieFolder, { recursive: true, mode: 0o755 });
+        console.log('Movie folder created successfully');
+      } catch (mkdirError) {
+        console.error('Failed to create movie folder:', mkdirError);
+        // Try to create with different permissions
+        try {
+          fs.mkdirSync(movieFolder, { recursive: true, mode: 0o777 });
+          console.log('Movie folder created with full permissions');
+        } catch (retryError) {
+          console.error('Failed to create movie folder even with full permissions:', retryError);
+          throw new Error(`Cannot create movie folder: ${retryError.message}`);
+        }
+      }
     }
     
     // Determine file extension from URL
@@ -659,6 +683,27 @@ app.listen(PORT, HOST, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
   if (lan) {
     console.log(`LAN access:        http://${lan}:${PORT}`);
+  }
+  
+  // Ensure all necessary directories exist
+  try {
+    if (!fs.existsSync(MOVIES_DIR)) {
+      console.log('Creating movies directory on startup:', MOVIES_DIR);
+      fs.mkdirSync(MOVIES_DIR, { recursive: true, mode: 0o755 });
+      console.log('Movies directory created successfully on startup');
+    }
+    
+    // Ensure public directory exists
+    const publicDir = path.join(__dirname, 'public');
+    if (!fs.existsSync(publicDir)) {
+      console.log('Creating public directory on startup:', publicDir);
+      fs.mkdirSync(publicDir, { recursive: true, mode: 0o755 });
+      console.log('Public directory created successfully on startup');
+    }
+    
+    console.log('All necessary directories verified/created');
+  } catch (dirError) {
+    console.error('Failed to create directories on startup:', dirError);
   }
   
   // Generate HLS for all movies

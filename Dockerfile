@@ -20,8 +20,10 @@ RUN npm ci --omit=dev --ignore-scripts || npm install --omit=dev
 # Copy application code
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p /app/public /app/movies
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/public /app/movies /app/hls && \
+    chmod 755 /app/movies /app/hls /app/public && \
+    chown -R 1000:1000 /app
 
 # Set environment variables
 ENV NODE_ENV=production
