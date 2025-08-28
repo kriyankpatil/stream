@@ -57,7 +57,16 @@
             maxMaxBufferLength: 60,
             liveSyncDurationCount: 2,
             fragLoadingRetryDelay: 300,
-            manifestLoadingRetryDelay: 300
+            manifestLoadingRetryDelay: 300,
+            // Add authentication to all XHR requests
+            xhrSetup: function(xhr, url) {
+              // Add token to all HLS segment requests
+              if (url.includes('/hls/')) {
+                const separator = url.includes('?') ? '&' : '?';
+                xhr.open('GET', url + separator + 'token=' + encodeURIComponent(token), true);
+                return false; // Prevent default open
+              }
+            }
           });
           
           // Load HLS manifest with token
