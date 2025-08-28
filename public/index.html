@@ -83,6 +83,73 @@
       .status.info { background: #1b1b2d; border: 1px solid #007acc; color: #007acc; }
       
       .hidden { display: none; }
+
+        /* Download Progress Styles */
+        .download-progress {
+          margin-top: 20px;
+          padding: 15px;
+          background: #111;
+          border: 1px solid #333;
+          border-radius: 8px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .download-progress h4 {
+          margin-top: 0;
+          margin-bottom: 10px;
+          color: #eaeaea;
+        }
+        .progress-info {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .progress-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .label {
+          font-size: 14px;
+          color: #ccc;
+          font-weight: 500;
+        }
+        .value {
+          font-size: 14px;
+          color: #eaeaea;
+          font-weight: 600;
+        }
+        .progress-bar-container {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          width: 100%;
+        }
+        .progress-bar {
+          flex-grow: 1;
+          height: 8px;
+          background: #333;
+          border-radius: 4px;
+          overflow: hidden;
+        }
+        .progress-fill {
+          height: 100%;
+          background: #007acc;
+          border-radius: 4px;
+          transition: width 0.3s ease-in-out;
+        }
+        .progress-text {
+          font-size: 14px;
+          color: #eaeaea;
+          font-weight: 600;
+        }
+        .download-error {
+          margin-top: 10px;
+          padding: 10px;
+          background: #dc3545;
+          color: white;
+          border-radius: 6px;
+          display: none;
+        }
     </style>
   </head>
   <body>
@@ -106,6 +173,47 @@
           <button type="submit" class="btn" id="downloadBtn">Download Movie</button>
         </form>
         <div id="downloadStatus" class="status hidden"></div>
+        
+        <!-- Download Progress Section -->
+        <div id="downloadProgress" class="download-progress" style="display: none;">
+          <h4>Download Progress</h4>
+          <div class="progress-info">
+            <div class="progress-row">
+              <span class="label">Status:</span>
+              <span id="progressStatus" class="value">Starting...</span>
+            </div>
+            <div class="progress-row">
+              <span class="label">Progress:</span>
+              <div class="progress-bar-container">
+                <div id="progressBar" class="progress-bar">
+                  <div id="progressFill" class="progress-fill"></div>
+                </div>
+                <span id="progressText" class="progress-text">0%</span>
+              </div>
+            </div>
+            <div class="progress-row">
+              <span class="label">Speed:</span>
+              <span id="downloadSpeed" class="value">0 MB/s</span>
+            </div>
+            <div class="progress-row">
+              <span class="label">Downloaded:</span>
+              <span id="downloadedSize" class="value">0 MB</span>
+            </div>
+            <div class="progress-row">
+              <span class="label">Total Size:</span>
+              <span id="totalSize" class="value">Unknown</span>
+            </div>
+            <div class="progress-row">
+              <span class="label">ETA:</span>
+              <span id="downloadEta" class="value">Unknown</span>
+            </div>
+            <div class="progress-row">
+              <span class="label">Elapsed:</span>
+              <span id="elapsedTime" class="value">0s</span>
+            </div>
+          </div>
+          <div id="downloadError" class="download-error" style="display: none;"></div>
+        </div>
       </div>
       
       <!-- Movies List -->
@@ -181,6 +289,46 @@
           setTimeout(() => {
             downloadStatus.classList.add('hidden');
           }, 5000);
+        }
+      }
+
+      function updateProgressBar(progressInfo) {
+        const progressBar = document.getElementById('progressBar');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const downloadSpeed = document.getElementById('downloadSpeed');
+        const downloadedSize = document.getElementById('downloadedSize');
+        const totalSize = document.getElementById('totalSize');
+        const downloadEta = document.getElementById('downloadEta');
+        const elapsedTime = document.getElementById('elapsedTime');
+
+        if (progressInfo.status === 'downloading') {
+          progressBar.style.width = `${progressInfo.progress}%`;
+          progressFill.style.width = `${progressInfo.progress}%`;
+          progressText.textContent = `${progressInfo.progress}%`;
+          downloadSpeed.textContent = `${progressInfo.speed} MB/s`;
+          downloadedSize.textContent = `${formatFileSize(progressInfo.downloadedSize)}`;
+          totalSize.textContent = `${formatFileSize(progressInfo.totalSize)}`;
+          downloadEta.textContent = `${progressInfo.eta}s`;
+          elapsedTime.textContent = `${progressInfo.elapsedTime}s`;
+        } else if (progressInfo.status === 'completed') {
+          progressBar.style.width = '100%';
+          progressFill.style.width = '100%';
+          progressText.textContent = '100%';
+          downloadSpeed.textContent = '0 MB/s';
+          downloadedSize.textContent = `${formatFileSize(progressInfo.fileSize)}`;
+          totalSize.textContent = `${formatFileSize(progressInfo.fileSize)}`;
+          downloadEta.textContent = '0s';
+          elapsedTime.textContent = `${progressInfo.elapsedTime}s`;
+        } else if (progressInfo.status === 'failed') {
+          progressBar.style.width = '0%';
+          progressFill.style.width = '0%';
+          progressText.textContent = '0%';
+          downloadSpeed.textContent = '0 MB/s';
+          downloadedSize.textContent = `${formatFileSize(progressInfo.downloadedSize)}`;
+          totalSize.textContent = `${formatFileSize(progressInfo.totalSize)}`;
+          downloadEta.textContent = '0s';
+          elapsedTime.textContent = `${progressInfo.elapsedTime}s`;
         }
       }
       
@@ -305,6 +453,7 @@
                 return;
               } else if (status.status === 'downloading') {
                 showStatus(`⏳ Downloading ${title}...`, 'info');
+                updateProgressBar(status); // Update progress bar
                 // Continue monitoring
                 attempts++;
                 if (attempts < maxAttempts) {
