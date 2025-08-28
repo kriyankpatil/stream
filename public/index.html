@@ -29,7 +29,7 @@
       <div class="meta">
         <span>Primary: HLS</span>
         <span>Fallback: Range <code>/video</code></span>
-        <a href="/api/health" target="_blank" rel="noreferrer">Health</a>
+        <a href="/api/health" target="_blank" rel="noopener">Health</a>
       </div>
       <p>
         If playback fails in some browsers due to MKV support, try opening in a
@@ -38,9 +38,15 @@
     </main>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.14/dist/hls.min.js"></script>
     <script>
+      // Use the correct ACCESS_TOKEN that matches your backend
+      const ACCESS_TOKEN = 'kriya2024';
       const urlParams = new URLSearchParams(location.search);
-      const token = urlParams.get('token');
-      const manifestUrl = token ? `/hls/stream.m3u8?token=${encodeURIComponent(token)}` : '/hls/stream.m3u8';
+      const urlToken = urlParams.get('token');
+      
+      // Use URL token if provided, otherwise use default ACCESS_TOKEN
+      const token = urlToken || ACCESS_TOKEN;
+      
+      const manifestUrl = `/hls/stream.m3u8?token=${encodeURIComponent(token)}`;
 
       const video = document.getElementById('video');
       function playWithHls() {
@@ -53,23 +59,38 @@
             fragLoadingRetryDelay: 300,
             manifestLoadingRetryDelay: 300
           });
-          // No CF-specific Authorization headers
+          
+          // Load HLS manifest with token
           hls.loadSource(manifestUrl);
           hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
-          hls.on(Hls.Events.ERROR, (e, data) => console.warn('HLS error', data));
+          
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            console.log('HLS manifest loaded successfully');
+            video.play().catch(() => {});
+          });
+          
+          hls.on(Hls.Events.ERROR, (e, data) => {
+            console.warn('HLS error:', data);
+            if (data.fatal) {
+              console.error('Fatal HLS error, falling back to direct video');
+              // Fallback to direct video streaming
+              const rangeUrl = `/video?token=${encodeURIComponent(token)}`;
+              video.src = rangeUrl;
+            }
+          });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = manifestUrl;
           video.addEventListener('loadedmetadata', () => video.play().catch(() => {}));
         } else {
           // Fallback to direct range streaming
-          const rangeUrl = token ? `/video?token=${encodeURIComponent(token)}` : '/video';
+          const rangeUrl = `/video?token=${encodeURIComponent(token)}`;
           video.src = rangeUrl;
         }
       }
+      
       playWithHls();
     </script>
   </body>
-  </html>
+</html>
 
 
