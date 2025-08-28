@@ -231,6 +231,9 @@ app.post('/api/download', requireToken, async (req, res) => {
     
     activeDownloads.set(downloadId, downloadInfo);
     
+    const curlCommand = `curl -L -o "${filePath}" "${downloadUrl}"`;
+    console.log('Executing curl command:', curlCommand);
+    
     // Start download in background and respond immediately
     downloadWithCurl(downloadId, downloadUrl, filePath, title, sanitizedTitle);
     
@@ -251,8 +254,19 @@ app.post('/api/download', requireToken, async (req, res) => {
     });
   }
 });
-        stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: '/app' // Ensure we're in the right directory
+
+// Function to handle curl download
+async function downloadWithCurl(downloadId, downloadUrl, filePath, title, sanitizedTitle) {
+  try {
+    const downloadInfo = activeDownloads.get(downloadId);
+    if (!downloadInfo) return;
+    
+    downloadInfo.status = 'downloading';
+    activeDownloads.set(downloadId, downloadInfo);
+    
+    const downloadPromise = new Promise((resolve, reject) => {
+      const curlProcess = spawn('curl', ['-L', '-o', filePath, downloadUrl], {
+        stdio: ['pipe', 'pipe', 'pipe']
       });
       
       let stdout = '';
