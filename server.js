@@ -5,7 +5,6 @@ const os = require('os');
 const { spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
-const url = require('url');
 
 // Use system-installed ffmpeg (installed via apt in Dockerfile)
 let ffmpegExecutable = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -208,6 +207,17 @@ app.post('/api/download', requireToken, async (req, res) => {
       });
     }
     
+    // Validate URL format
+    try {
+      new URL(url);
+    } catch (urlError) {
+      console.log('Invalid URL format:', url, urlError.message);
+      return res.status(400).json({ 
+        error: 'Invalid URL format',
+        details: urlError.message
+      });
+    }
+    
     console.log('Processing download request:', { title, url });
     
     // Sanitize title for folder name
@@ -290,7 +300,7 @@ app.post('/api/download', requireToken, async (req, res) => {
     }
     
     // Determine file extension from URL
-    const urlPath = url.parse(url).pathname;
+    const urlPath = new URL(url).pathname;
     const extension = path.extname(urlPath) || '.mp4';
     const fileName = `movie${extension}`;
     const filePath = path.join(movieFolder, fileName);
