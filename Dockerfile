@@ -1,20 +1,30 @@
-FROM node:20-alpine
+# Use a stable Debian-based Node image (avoids some Alpine/DNS issues)
+FROM node:20-bookworm-slim
 
+# Create app directory
 WORKDIR /app
 
-RUN apk add --no-cache ffmpeg
+# Install ffmpeg for HLS generation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+  && rm -rf /var/lib/apt/lists/*
 
+# Install dependencies first (better layer caching)
 COPY package*.json ./
-RUN npm ci --omit=dev || npm install --omit=dev
+RUN npm ci --omit=dev
 
+# Copy the rest of the app
 COPY . .
 
-# Create directories expected at runtime
-RUN mkdir -p /app/public /app/movie
+# Environment
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=3000
 
-ENV HOST=0.0.0.0
+# Expose the app port
 EXPOSE 3000
 
-CMD ["npm", "run", "start"]
+# Start the server
+CMD ["node", "server.js"]
 
 
