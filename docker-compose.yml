@@ -42,10 +42,9 @@ services:
     command: >
       sh -c "
         npm install -g localtunnel &&
-        npx localtunnel --port 8080 --subdomain mymovies --local-host frontend
+        npx localtunnel --port 8080 --subdomain mymovies
       "
-    networks:
-      - app
+    network_mode: host
     restart: unless-stopped
 
 volumes:
