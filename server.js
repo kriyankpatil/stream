@@ -181,18 +181,34 @@ app.post('/api/download', requireToken, async (req, res) => {
   console.log('Download endpoint called with:', { 
     body: req.body, 
     headers: req.headers,
-    url: req.url 
+    url: req.url,
+    method: req.method,
+    contentType: req.get('Content-Type')
   });
   
   try {
-    const { downloadUrl, title } = req.body;
+    const { url, title } = req.body;
     
-    if (!downloadUrl || !title) {
-      console.log('Missing required fields:', { downloadUrl: !!downloadUrl, title: !!title });
-      return res.status(400).json({ error: 'Download URL and title are required' });
+    console.log('Extracted parameters:', { url, title, bodyKeys: Object.keys(req.body) });
+    
+    if (!url || !title) {
+      console.log('Missing required fields:', { url: !!url, title: !!title, urlType: typeof url, titleType: typeof title });
+      return res.status(400).json({ 
+        error: 'Download URL and title are required',
+        received: { url: !!url, title: !!title },
+        expected: { url: 'string', title: 'string' }
+      });
     }
     
-    console.log('Processing download request:', { title, downloadUrl });
+    if (typeof url !== 'string' || typeof title !== 'string') {
+      console.log('Invalid field types:', { urlType: typeof url, titleType: typeof title });
+      return res.status(400).json({ 
+        error: 'URL and title must be strings',
+        received: { urlType: typeof url, titleType: typeof title }
+      });
+    }
+    
+    console.log('Processing download request:', { title, url });
     
     // Sanitize title for folder name
     const sanitizedTitle = title.replace(/[<>:"/\\|?*]/g, '_').trim();
@@ -250,7 +266,7 @@ app.post('/api/download', requireToken, async (req, res) => {
         // Try to create with different permissions
         try {
           fs.mkdirSync(movieFolder, { recursive: true, mode: 0o777 });
-          console.log('Movie folder created with full permissions');
+          console.log('Movie folder created successfully');
         } catch (retryError) {
           console.error('Failed to create movie folder even with full permissions:', retryError);
           throw new Error(`Cannot create movie folder: ${retryError.message}`);
@@ -274,7 +290,7 @@ app.post('/api/download', requireToken, async (req, res) => {
     }
     
     // Determine file extension from URL
-    const urlPath = url.parse(downloadUrl).pathname;
+    const urlPath = url.parse(url).pathname;
     const extension = path.extname(urlPath) || '.mp4';
     const fileName = `movie${extension}`;
     const filePath = path.join(movieFolder, fileName);
@@ -301,13 +317,13 @@ app.post('/api/download', requireToken, async (req, res) => {
       eta: 0,
       startTime: new Date(),
       filePath: filePath,
-      url: downloadUrl
+      url: url
     };
     
     activeDownloads.set(downloadId, downloadInfo);
     
     // Start download in background and respond immediately
-    downloadWithProgress(downloadId, downloadUrl, filePath, title, sanitizedTitle);
+    downloadWithProgress(downloadId, url, filePath, title, sanitizedTitle);
     
     res.json({ 
       success: true, 
@@ -328,7 +344,7 @@ app.post('/api/download', requireToken, async (req, res) => {
 });
 
 // Download with progress tracking
-async function downloadWithProgress(downloadId, downloadUrl, filePath, title, sanitizedTitle) {
+async function downloadWithProgress(downloadId, url, filePath, title, sanitizedTitle) {
   try {
     const downloadInfo = activeDownloads.get(downloadId);
     if (!downloadInfo) return;
@@ -351,7 +367,7 @@ async function downloadWithProgress(downloadId, downloadUrl, filePath, title, sa
       '--progress-bar=true',
       '-o', path.basename(filePath),
       '-d', path.dirname(filePath),
-      downloadUrl
+      url
     ]);
 
     let lastProgress = 0;
@@ -649,7 +665,20 @@ app.get('/api/download/:downloadId/status', requireToken, (req, res) => {
     return res.status(404).json({ error: 'Download not found' });
   }
   
-  res.json(downloadInfo);
+  // Calculate additional info
+  const elapsed = Date.now() - downloadInfo.startTime;
+  const elapsedSeconds = Math.floor(elapsed / 1000);
+  
+  const response = {
+    ...downloadInfo,
+    elapsed: elapsedSeconds,
+    speedFormatted: downloadInfo.speed > 0 ? `${(downloadInfo.speed / 1024 / 1024).toFixed(2)} MB/s` : '0 MB/s',
+    downloadedFormatted: downloadInfo.downloaded > 0 ? `${(downloadInfo.downloaded / 1024 / 1024).toFixed(2)} MB` : '0 MB',
+    totalFormatted: downloadInfo.total > 0 ? `${(downloadInfo.total / 1024 / 1024).toFixed(2)} MB` : 'Unknown',
+    etaFormatted: downloadInfo.eta > 0 ? `${Math.floor(downloadInfo.eta / 60)}m ${Math.floor(downloadInfo.eta % 60)}s` : 'Unknown'
+  };
+  
+  res.json(response);
 });
 
 // Get all active downloads
