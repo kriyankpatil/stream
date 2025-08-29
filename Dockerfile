@@ -23,7 +23,7 @@ COPY . .
 # Create necessary directories with proper permissions
 RUN mkdir -p /app/public /app/movies /app/hls && \
     chmod 777 /app/movies /app/hls /app/public && \
-    chown -R root:root /app
+    chown -R root:root /app || true
 
 # Set environment variables
 ENV NODE_ENV=production
