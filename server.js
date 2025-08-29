@@ -306,9 +306,9 @@ async function downloadWithFastMethod(downloadId, downloadUrl, filePath, title, 
     
     // Try multiple download methods in order of preference
     const downloadMethods = [
-      { name: 'aria2c', command: 'aria2c', args: ['--max-connection-per-server=16', '--min-split-size=1M', '--split=16', '--continue=true', '--max-download-limit=0', '--file-allocation=none', '-o', path.basename(filePath), '-d', path.dirname(filePath), downloadUrl] },
       { name: 'wget', command: 'wget', args: ['--continue', '--tries=3', '--timeout=30', '--progress=bar', '-O', filePath, downloadUrl] },
-      { name: 'curl', command: 'curl', args: ['-L', '-C', '-', '--connect-timeout', '30', '--max-time', '1800', '--retry', '3', '--retry-delay', '5', '-o', filePath, downloadUrl] }
+      { name: 'curl', command: 'curl', args: ['-L', '-C', '-', '--connect-timeout', '30', '--max-time', '1800', '--retry', '3', '--retry-delay', '5', '-o', filePath, downloadUrl] },
+      { name: 'aria2c', command: 'aria2c', args: ['--max-connection-per-server=16', '--min-split-size=1M', '--split=16', '--continue=true', '--max-download-limit=0', '--file-allocation=none', '-o', path.basename(filePath), '-d', path.dirname(filePath), downloadUrl] }
     ];
     
     let downloadSuccess = false;
