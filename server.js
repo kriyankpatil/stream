@@ -325,471 +325,168 @@ app.post('/api/download', requireToken, async (req, res) => {
 
 // Function to handle fast download using multiple methods
 async function downloadWithFastMethod(downloadId, downloadUrl, filePath, title, sanitizedTitle) {
-  const downloadInfo = activeDownloads.get(downloadId);
-  if (!downloadInfo) return;
-
-  downloadInfo.status = 'downloading';
-  activeDownloads.set(downloadId, downloadInfo);
-
-  console.log(`Starting fast download for ${downloadId}...`);
-
-  // Download methods in order of preference (fastest first)
-  const downloadMethods = [
-    { 
-      name: 'aria2c', 
-      command: 'aria2c', 
-      args: [
-        '--max-connection-per-server=16', 
-        '--min-split-size=1M', 
-        '--split=16', 
-        '--continue=true', 
-        '--max-download-limit=0', 
-        '--file-allocation=none',
-        '--console-log-level=error',
-        '--summary-interval=1',
-        '--progress-bar=true',
-        '-o', path.basename(filePath), 
-        '-d', path.dirname(filePath), 
-        downloadUrl
-      ] 
-    },
-    { 
-      name: 'wget', 
-      command: 'wget', 
-      args: [
-        '--continue', 
-        '--tries=3', 
-        '--timeout=30', 
-        '--progress=bar', 
-        '--show-progress',
-        '-O', filePath, 
-        downloadUrl
-      ] 
-    },
-    { 
-      name: 'curl', 
-      command: 'curl', 
-      args: [
-        '-L', 
-        '-C', '-', 
-        '--connect-timeout', '30', 
-        '--max-time', '1800', 
-        '--retry', '3', 
-        '--retry-delay', '5',
-        '--progress-bar',
-        '-#',
-        '-o', filePath, 
-        downloadUrl
-      ] 
-    }
-  ];
-
-  for (const method of downloadMethods) {
-    try {
-      console.log(`Trying ${method.name} for download...`);
-      
-      if (method.name === 'aria2c') {
-        await downloadWithAria2c(downloadId, method.args, filePath, title, sanitizedTitle);
-        return; // Success, exit
-      } else if (method.name === 'wget') {
-        await downloadWithWget(downloadId, method.args, filePath, title, sanitizedTitle);
-        return; // Success, exit
-      } else if (method.name === 'curl') {
-        await downloadWithCurl(downloadId, method.args, filePath, title, sanitizedTitle);
-        return; // Success, exit
+  try {
+    const downloadInfo = activeDownloads.get(downloadId);
+    if (!downloadInfo) return;
+    
+    downloadInfo.status = 'downloading';
+    activeDownloads.set(downloadId, downloadInfo);
+    
+    console.log(`Starting fast download for ${title} to ${filePath}`);
+    
+    // Try multiple download methods in order of preference
+    const downloadMethods = [
+      { name: 'aria2c', command: 'aria2c', args: ['--max-connection-per-server=16', '--min-split-size=1M', '--split=16', '--continue=true', '--max-download-limit=0', '--file-allocation=none', '-o', path.basename(filePath), '-d', path.dirname(filePath), downloadUrl] },
+      { name: 'wget', command: 'wget', args: ['--continue', '--tries=3', '--timeout=30', '--progress=bar', '-O', filePath, downloadUrl] },
+      { name: 'curl', command: 'curl', args: ['-L', '-C', '-', '--connect-timeout', '30', '--max-time', '1800', '--retry', '3', '--retry-delay', '5', '-o', filePath, downloadUrl] }
+    ];
+    
+    let downloadSuccess = false;
+    let lastError = null;
+    
+    for (const method of downloadMethods) {
+      try {
+        console.log(`Trying download method: ${method.name}`);
+        
+        const downloadPromise = new Promise((resolve, reject) => {
+          const downloadProcess = spawn(method.command, method.args, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            cwd: '/app'
+          });
+          
+          let stdout = '';
+          let stderr = '';
+          
+          downloadProcess.stdout.on('data', (data) => {
+            stdout += data.toString();
+            console.log(`${method.name} stdout:`, data.toString().trim());
+          });
+          
+          downloadProcess.stderr.on('data', (data) => {
+            stderr += data.toString();
+            console.log(`${method.name} stderr:`, data.toString().trim());
+          });
+          
+          downloadProcess.on('close', (code) => {
+            console.log(`${method.name} process exited with code ${code}`);
+            if (code === 0) {
+              console.log(`Download completed with ${method.name}: ${title}`);
+              resolve(filePath);
+            } else {
+              reject(new Error(`${method.name} failed with code ${code}. Stderr: ${stderr}`));
+            }
+          });
+          
+          downloadProcess.on('error', (err) => {
+            console.error(`Failed to start ${method.name} process:`, err);
+            reject(err);
+          });
+          
+          // Set timeout for download process
+          setTimeout(() => {
+            if (!downloadProcess.killed) {
+              console.log(`${method.name} process timeout, killing process`);
+              downloadProcess.kill('SIGKILL');
+              reject(new Error('Download timeout'));
+            }
+          }, 1800000); // 30 minutes timeout
+        });
+        
+        // Wait for download to complete
+        console.log(`Waiting for ${method.name} download to complete...`);
+        await downloadPromise;
+        console.log(`${method.name} download promise resolved`);
+        
+        downloadSuccess = true;
+        break; // Exit loop on success
+        
+      } catch (error) {
+        console.error(`${method.name} download failed:`, error);
+        lastError = error;
+        
+        // Clean up partial file before trying next method
+        try {
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Cleaned up partial file from ${method.name}`);
+          }
+        } catch (cleanupError) {
+          console.error('Failed to cleanup partial file:', cleanupError);
+        }
+        
+        // Continue to next method
+        continue;
       }
-    } catch (error) {
-      console.error(`${method.name} failed:`, error);
-      downloadInfo.error = `${method.name} failed: ${error.message}`;
-      continue; // Try next method
+    }
+    
+    if (!downloadSuccess) {
+      throw new Error(`All download methods failed. Last error: ${lastError?.message}`);
+    }
+    
+    // Verify file was downloaded
+    if (!fs.existsSync(filePath)) {
+      throw new Error('File was not downloaded successfully');
+    }
+    
+    const fileStats = fs.statSync(filePath);
+    console.log(`File downloaded successfully: ${filePath} (${fileStats.size} bytes)`);
+    
+    // Update download status
+    downloadInfo.status = 'completed';
+    downloadInfo.progress = 100;
+    downloadInfo.completionTime = new Date();
+    downloadInfo.fileSize = fileStats.size;
+    activeDownloads.set(downloadId, downloadInfo);
+    
+    // Rescan movies to include the new one
+    console.log('Rescanning movies...');
+    scanMovies();
+    console.log('Movies rescanned');
+    
+    // Generate HLS for the new movie
+    const newMovie = MOVIES.find(m => m.id === sanitizedTitle);
+    console.log('Looking for new movie:', { 
+      sanitizedTitle, 
+      found: !!newMovie, 
+      moviesCount: MOVIES.length 
+    });
+    
+    if (newMovie && newMovie.movies.length > 0) {
+      console.log('Starting HLS generation for new movie');
+      generateHls(newMovie, newMovie.movies[0]);
+    } else {
+      console.log('No new movie found or no movie files');
+    }
+    
+    console.log('Download process completed successfully');
+    
+  } catch (error) {
+    console.error(`Download failed with error:`, error);
+    console.error('Error stack:', error.stack);
+    
+    // Update download status
+    const downloadInfo = activeDownloads.get(downloadId);
+    if (downloadInfo) {
+      downloadInfo.status = 'failed';
+      downloadInfo.error = error.message;
+      downloadInfo.completionTime = new Date();
+      activeDownloads.set(downloadId, downloadInfo);
+    }
+    
+    // Clean up partial download
+    try {
+      if (fs.existsSync(filePath)) {
+        console.log('Cleaning up partial download file:', filePath);
+        fs.unlinkSync(filePath);
+        console.log('Cleanup completed');
+      }
+    } catch (cleanupError) {
+      console.error('Failed to cleanup partial download:', cleanupError);
     }
   }
-
-  // All methods failed
-  downloadInfo.status = 'failed';
-  downloadInfo.error = 'All download methods failed';
-  activeDownloads.set(downloadId, downloadInfo);
-  console.error(`All download methods failed for ${downloadId}`);
 }
 
-// Download with aria2c and progress tracking
-async function downloadWithAria2c(downloadId, args, filePath, title, sanitizedTitle) {
-  return new Promise((resolve, reject) => {
-    const downloadInfo = activeDownloads.get(downloadId);
-    if (!downloadInfo) return reject(new Error('Download info not found'));
-
-    console.log(`Starting aria2c download for ${downloadId}...`);
-    
-    const aria2cProcess = spawn('aria2c', args);
-    let lastProgress = 0;
-    let lastTime = Date.now();
-    let lastSize = 0;
-
-    aria2cProcess.stdout.on('data', (data) => {
-      const output = data.toString();
-      console.log(`aria2c output: ${output}`);
-      
-      // Parse progress from aria2c output
-      const progressMatch = output.match(/(\d+)%\|/);
-      if (progressMatch) {
-        const progress = parseInt(progressMatch[1]);
-        downloadInfo.progress = progress;
-        
-        // Calculate speed and ETA
-        const currentTime = Date.now();
-        const timeDiff = (currentTime - lastTime) / 1000; // seconds
-        
-        if (timeDiff > 0) {
-          const currentSize = (progress / 100) * (downloadInfo.total || 1000000000); // Estimate total size
-          const sizeDiff = currentSize - lastSize;
-          downloadInfo.speed = sizeDiff / timeDiff; // bytes per second
-          downloadInfo.downloaded = currentSize;
-          
-          if (downloadInfo.speed > 0) {
-            const remaining = (100 - progress) / 100 * (downloadInfo.total || 1000000000);
-            downloadInfo.eta = remaining / downloadInfo.speed; // seconds
-          }
-          
-          lastTime = currentTime;
-          lastSize = currentSize;
-        }
-        
-        console.log(`Progress: ${progress}%`);
-        activeDownloads.set(downloadId, downloadInfo);
-      }
-    });
-
-    aria2cProcess.stderr.on('data', (data) => {
-      const error = data.toString();
-      console.error(`aria2c error: ${error}`);
-      
-      // Check for file size info
-      const sizeMatch = error.match(/Total Size: (\d+)/);
-      if (sizeMatch) {
-        downloadInfo.total = parseInt(sizeMatch[1]);
-        console.log(`Total file size: ${(downloadInfo.total / 1024 / 1024).toFixed(2)} MB`);
-        activeDownloads.set(downloadId, downloadInfo);
-      }
-    });
-
-    aria2cProcess.on('close', async (code) => {
-      console.log(`aria2c process exited with code ${code}`);
-      
-      if (code === 0) {
-        // Download completed successfully
-        downloadInfo.status = 'completed';
-        downloadInfo.progress = 100;
-        downloadInfo.downloaded = downloadInfo.total;
-        downloadInfo.speed = 0;
-        downloadInfo.eta = 0;
-        
-        console.log(`Download completed for ${downloadId}`);
-        
-        // Verify file exists and has content
-        if (fs.existsSync(filePath)) {
-          const stats = fs.statSync(filePath);
-          if (stats.size > 0) {
-            console.log(`File verified: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
-            
-            // Generate HLS
-            downloadInfo.status = 'generating_hls';
-            activeDownloads.set(downloadId, downloadInfo);
-            
-            try {
-              await generateHlsForMovie(sanitizedTitle);
-              downloadInfo.status = 'completed';
-              console.log(`HLS generated for ${title}`);
-            } catch (hlsError) {
-              console.error(`HLS generation failed for ${title}:`, hlsError);
-              downloadInfo.status = 'hls_failed';
-              downloadInfo.error = `HLS generation failed: ${hlsError.message}`;
-            }
-          } else {
-            console.error(`Download completed but file is empty: ${filePath}`);
-            downloadInfo.status = 'failed';
-            downloadInfo.error = 'Download completed but file is empty';
-          }
-        } else {
-          console.error(`Download completed but file not found: ${filePath}`);
-          downloadInfo.status = 'failed';
-          downloadInfo.error = 'Download completed but file not found';
-        }
-        
-        activeDownloads.set(downloadId, downloadInfo);
-        resolve();
-      } else {
-        // Download failed
-        downloadInfo.status = 'failed';
-        downloadInfo.error = `aria2c exited with code ${code}`;
-        console.error(`Download failed for ${downloadId} with code ${code}`);
-        
-        // Clean up partial file
-        if (fs.existsSync(filePath)) {
-          try {
-            fs.unlinkSync(filePath);
-            console.log(`Cleaned up partial file: ${filePath}`);
-          } catch (cleanupError) {
-            console.error(`Failed to cleanup partial file:`, cleanupError);
-          }
-        }
-        
-        activeDownloads.set(downloadId, downloadInfo);
-        reject(new Error(`aria2c exited with code ${code}`));
-      }
-      
-      // Update movies list
-      scanMovies();
-    });
-
-    aria2cProcess.on('error', (error) => {
-      console.error(`Failed to start aria2c:`, error);
-      downloadInfo.status = 'failed';
-      downloadInfo.error = `Failed to start aria2c: ${error.message}`;
-      activeDownloads.set(downloadId, downloadInfo);
-      reject(error);
-    });
-  });
-}
-
-// Download with wget and progress tracking
-async function downloadWithWget(downloadId, args, filePath, title, sanitizedTitle) {
-  return new Promise((resolve, reject) => {
-    const downloadInfo = activeDownloads.get(downloadId);
-    if (!downloadInfo) return reject(new Error('Download info not found'));
-
-    console.log(`Starting wget download for ${downloadId}...`);
-    
-    const wgetProcess = spawn('wget', args);
-    let lastProgress = 0;
-    let lastTime = Date.now();
-
-    wgetProcess.stdout.on('data', (data) => {
-      const output = data.toString();
-      console.log(`wget output: ${output}`);
-      
-      // Parse progress from wget output
-      const progressMatch = output.match(/(\d+)%/);
-      if (progressMatch) {
-        const progress = parseInt(progressMatch[1]);
-        downloadInfo.progress = progress;
-        
-        // Calculate speed and ETA
-        const currentTime = Date.now();
-        const timeDiff = (currentTime - lastTime) / 1000; // seconds
-        
-        if (timeDiff > 0 && progress > lastProgress) {
-          const progressDiff = progress - lastProgress;
-          const estimatedTotal = 1000000000; // 1GB estimate
-          const downloadedBytes = (progress / 100) * estimatedTotal;
-          const speed = (downloadedBytes / (currentTime - downloadInfo.startTime)) * 1000; // bytes per second
-          
-          downloadInfo.speed = speed;
-          downloadInfo.downloaded = downloadedBytes;
-          downloadInfo.total = estimatedTotal;
-          
-          if (speed > 0) {
-            const remaining = (100 - progress) / 100 * estimatedTotal;
-            downloadInfo.eta = remaining / speed; // seconds
-          }
-          
-          lastTime = currentTime;
-          lastProgress = progress;
-        }
-        
-        console.log(`Progress: ${progress}%`);
-        activeDownloads.set(downloadId, downloadInfo);
-      }
-    });
-
-    wgetProcess.stderr.on('data', (data) => {
-      const error = data.toString();
-      console.error(`wget error: ${error}`);
-    });
-
-    wgetProcess.on('close', async (code) => {
-      console.log(`wget process exited with code ${code}`);
-      
-      if (code === 0) {
-        // Download completed successfully
-        downloadInfo.status = 'completed';
-        downloadInfo.progress = 100;
-        downloadInfo.downloaded = downloadInfo.total;
-        downloadInfo.speed = 0;
-        downloadInfo.eta = 0;
-        
-        console.log(`Download completed for ${downloadId}`);
-        
-        // Generate HLS
-        downloadInfo.status = 'generating_hls';
-        activeDownloads.set(downloadId, downloadInfo);
-        
-        try {
-          await generateHlsForMovie(sanitizedTitle);
-          downloadInfo.status = 'completed';
-          console.log(`HLS generated for ${title}`);
-        } catch (hlsError) {
-          console.error(`HLS generation failed for ${title}:`, hlsError);
-          downloadInfo.status = 'hls_failed';
-          downloadInfo.error = `HLS generation failed: ${hlsError.message}`;
-        }
-        
-        activeDownloads.set(downloadId, downloadInfo);
-        resolve();
-      } else {
-        // Download failed
-        downloadInfo.status = 'failed';
-        downloadInfo.error = `wget exited with code ${code}`;
-        console.error(`Download failed for ${downloadId} with code ${code}`);
-        
-        // Clean up partial file
-        if (fs.existsSync(filePath)) {
-          try {
-            fs.unlinkSync(filePath);
-            console.log(`Cleaned up partial file: ${filePath}`);
-          } catch (cleanupError) {
-            console.error(`Failed to cleanup partial file:`, cleanupError);
-          }
-        }
-        
-        activeDownloads.set(downloadId, downloadInfo);
-        reject(new Error(`wget exited with code ${code}`));
-      }
-      
-      // Update movies list
-      scanMovies();
-    });
-
-    wgetProcess.on('error', (error) => {
-      console.error(`Failed to start wget:`, error);
-      downloadInfo.status = 'failed';
-      downloadInfo.error = `Failed to start wget: ${error.message}`;
-      activeDownloads.set(downloadId, downloadInfo);
-      reject(error);
-    });
-  });
-}
-
-// Download with curl and progress tracking
-async function downloadWithCurl(downloadId, args, filePath, title, sanitizedTitle) {
-  return new Promise((resolve, reject) => {
-    const downloadInfo = activeDownloads.get(downloadId);
-    if (!downloadInfo) return reject(new Error('Download info not found'));
-
-    console.log(`Starting curl download for ${downloadId}...`);
-    
-    const curlProcess = spawn('curl', args);
-    let lastProgress = 0;
-    let lastTime = Date.now();
-
-    curlProcess.stdout.on('data', (data) => {
-      const output = data.toString();
-      console.log(`curl output: ${output}`);
-      
-      // Parse progress from curl output (curl shows progress on stderr)
-    });
-
-    curlProcess.stderr.on('data', (data) => {
-      const error = data.toString();
-      console.error(`curl error: ${error}`);
-      
-      // Parse progress from curl stderr (curl shows progress here)
-      const progressMatch = error.match(/(\d+)%/);
-      if (progressMatch) {
-        const progress = parseInt(progressMatch[1]);
-        downloadInfo.progress = progress;
-        
-        // Calculate speed and ETA
-        const currentTime = Date.now();
-        const timeDiff = (currentTime - lastTime) / 1000; // seconds
-        
-        if (timeDiff > 0 && progress > lastProgress) {
-          const progressDiff = progress - lastProgress;
-          const estimatedTotal = 1000000000; // 1GB estimate
-          const downloadedBytes = (progress / 100) * estimatedTotal;
-          const speed = (downloadedBytes / (currentTime - downloadInfo.startTime)) * 1000; // bytes per second
-          
-          downloadInfo.speed = speed;
-          downloadInfo.downloaded = downloadedBytes;
-          downloadInfo.total = estimatedTotal;
-          
-          if (speed > 0) {
-            const remaining = (100 - progress) / 100 * estimatedTotal;
-            downloadInfo.eta = remaining / speed; // seconds
-          }
-          
-          lastTime = currentTime;
-          lastProgress = progress;
-        }
-        
-        console.log(`Progress: ${progress}%`);
-        activeDownloads.set(downloadId, downloadInfo);
-      }
-    });
-
-    curlProcess.on('close', async (code) => {
-      console.log(`curl process exited with code ${code}`);
-      
-      if (code === 0) {
-        // Download completed successfully
-        downloadInfo.status = 'completed';
-        downloadInfo.progress = 100;
-        downloadInfo.downloaded = downloadInfo.total;
-        downloadInfo.speed = 0;
-        downloadInfo.eta = 0;
-        
-        console.log(`Download completed for ${downloadId}`);
-        
-        // Generate HLS
-        downloadInfo.status = 'generating_hls';
-        activeDownloads.set(downloadId, downloadInfo);
-        
-        try {
-          await generateHlsForMovie(sanitizedTitle);
-          downloadInfo.status = 'completed';
-          console.log(`HLS generated for ${title}`);
-        } catch (hlsError) {
-          console.error(`HLS generation failed for ${title}:`, hlsError);
-          downloadInfo.status = 'hls_failed';
-          downloadInfo.error = `HLS generation failed: ${hlsError.message}`;
-        }
-        
-        activeDownloads.set(downloadId, downloadInfo);
-        resolve();
-      } else {
-        // Download failed
-        downloadInfo.status = 'failed';
-        downloadInfo.error = `curl exited with code ${code}`;
-        console.error(`Download failed for ${downloadId} with code ${code}`);
-        
-        // Clean up partial file
-        if (fs.existsSync(filePath)) {
-          try {
-            fs.unlinkSync(filePath);
-            console.log(`Cleaned up partial file: ${filePath}`);
-          } catch (cleanupError) {
-            console.error(`Failed to cleanup partial file:`, cleanupError);
-          }
-        }
-        
-        activeDownloads.set(downloadId, downloadInfo);
-        reject(new Error(`curl exited with code ${code}`));
-      }
-      
-      // Update movies list
-      scanMovies();
-    });
-
-    curlProcess.on('error', (error) => {
-      console.error(`Failed to start curl:`, error);
-      downloadInfo.status = 'failed';
-      downloadInfo.error = `Failed to start curl: ${error.message}`;
-      activeDownloads.set(downloadId, downloadInfo);
-      reject(error);
-    });
-  });
-}
-
-// Download status endpoint
+// Get download status
 app.get('/api/download/:downloadId/status', requireToken, (req, res) => {
   const { downloadId } = req.params;
   const downloadInfo = activeDownloads.get(downloadId);
@@ -798,22 +495,7 @@ app.get('/api/download/:downloadId/status', requireToken, (req, res) => {
     return res.status(404).json({ error: 'Download not found' });
   }
   
-  // Calculate additional info
-  const elapsed = Date.now() - downloadInfo.startTime;
-  const elapsedSeconds = Math.floor(elapsed / 1000);
-  
-  // Format values for better display
-  const response = {
-    ...downloadInfo,
-    elapsed: elapsedSeconds,
-    speedFormatted: downloadInfo.speed > 0 ? `${(downloadInfo.speed / 1024 / 1024).toFixed(2)} MB/s` : '0 MB/s',
-    downloadedFormatted: downloadInfo.downloaded > 0 ? `${(downloadInfo.downloaded / 1024 / 1024).toFixed(2)} MB` : '0 MB',
-    totalFormatted: downloadInfo.total > 0 ? `${(downloadInfo.total / 1024 / 1024).toFixed(2)} MB` : 'Unknown',
-    etaFormatted: downloadInfo.eta > 0 ? `${Math.floor(downloadInfo.eta / 60)}m ${Math.floor(downloadInfo.eta % 60)}s` : 'Unknown',
-    elapsedFormatted: `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`
-  };
-  
-  res.json(response);
+  res.json(downloadInfo);
 });
 
 // Get all active downloads
