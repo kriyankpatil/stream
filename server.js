@@ -125,22 +125,24 @@ function scanMovies() {
 // Initial scan
 scanMovies();
 
-// Serve HLS files for each movie
-MOVIES.forEach(movie => {
-  app.use(`/hls/${movie.id}`, requireToken, express.static(movie.hlsPath, {
-    setHeaders: (res, filePath) => {
-      if (filePath.endsWith('.m3u8')) {
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.setHeader('Cache-Control', 'public, max-age=60');
-      } else if (filePath.endsWith('.ts')) {
-        res.setHeader('Content-Type', 'video/mp2t');
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      } else if (filePath.endsWith('.mp4') || filePath.endsWith('.m4s')) {
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+// Serve HLS files only if FORCE_HLS is enabled
+if (FORCE_HLS) {
+  MOVIES.forEach(movie => {
+    app.use(`/hls/${movie.id}`, requireToken, express.static(movie.hlsPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.m3u8')) {
+          res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+          res.setHeader('Cache-Control', 'public, max-age=60');
+        } else if (filePath.endsWith('.ts')) {
+          res.setHeader('Content-Type', 'video/mp2t');
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (filePath.endsWith('.mp4') || filePath.endsWith('.m4s')) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
       }
-    }
-  }));
-});
+    }));
+  });
+}
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true });
@@ -601,9 +603,9 @@ app.get('/video/:movieId/:movieName', requireToken, (req, res) => {
 
 // HLS generation for all movies (non-blocking)
 function generateHlsForAll() {
+  if (!FORCE_HLS) return;
   MOVIES.forEach(movie => {
     if (movie.movies.length > 0) {
-      // Generate HLS for the first movie in each folder
       const movieFile = movie.movies[0];
       generateHls(movie, movieFile);
     }
@@ -612,6 +614,10 @@ function generateHlsForAll() {
 
 // HLS generation for a specific movie
 function generateHls(movie, movieFile, force = false) {
+  if (!FORCE_HLS && !force) {
+    console.log('FORCE_HLS disabled; skipping HLS generation');
+    return;
+  }
   const hlsDir = movie.hlsPath;
   const manifestPath = path.join(hlsDir, 'stream.m3u8');
   

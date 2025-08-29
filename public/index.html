@@ -127,8 +127,8 @@
       </div>
       
       <div class="meta">
-        <span>Primary: HLS</span>
-        <span>Fallback: Range <code>/video</code></span>
+        <span>Primary: Range <code>/video</code></span>
+        <span>Optional: HLS (disabled)</span>
         <a href="/api/health" target="_blank" rel="noopener">Health</a>
       </div>
       
@@ -409,60 +409,13 @@
         video.removeAttribute('src');
         video.load();
         
-        // Try HLS first
-        playWithHls(movieId, movieName);
+        // Always use direct range streaming
+        const rangeUrl = `/video/${movieId}/${movieName}?token=${encodeURIComponent(token)}`;
+        video.src = rangeUrl;
+        video.play().catch(() => {});
       }
       
-      function playWithHls(movieId, movieName) {
-        if (window.Hls && Hls.isSupported()) {
-          const manifestUrl = `/hls/${movieId}/stream.m3u8?token=${encodeURIComponent(token)}`;
-          
-          hls = new Hls({
-            startLevel: 0,
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-            liveSyncDurationCount: 2,
-            fragLoadingRetryDelay: 300,
-            manifestLoadingRetryDelay: 300,
-            // Add authentication to all XHR requests
-            xhrSetup: function(xhr, url) {
-              // Add token to all HLS segment requests
-              if (url.includes('/hls/')) {
-                const separator = url.includes('?') ? '&' : '?';
-                xhr.open('GET', url + separator + 'token=' + encodeURIComponent(token), true);
-                return false; // Prevent default open
-              }
-            }
-          });
-          
-          // Load HLS manifest with token
-          hls.loadSource(manifestUrl);
-          hls.attachMedia(video);
-          
-          hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            console.log(`HLS manifest loaded successfully for ${movieName}`);
-            video.play().catch(() => {});
-          });
-          
-          hls.on(Hls.Events.ERROR, (e, data) => {
-            console.warn('HLS error:', data);
-            if (data.fatal) {
-              console.error('Fatal HLS error, falling back to direct video');
-              // Fallback to direct video streaming
-              const rangeUrl = `/video/${movieId}/${movieName}?token=${encodeURIComponent(token)}`;
-              video.src = rangeUrl;
-            }
-          });
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          const manifestUrl = `/hls/${movieId}/stream.m3u8?token=${encodeURIComponent(token)}`;
-          video.src = manifestUrl;
-          video.addEventListener('loadedmetadata', () => video.play().catch(() => {}));
-        } else {
-          // Fallback to direct range streaming
-          const rangeUrl = `/video/${movieId}/${movieName}?token=${encodeURIComponent(token)}`;
-          video.src = rangeUrl;
-        }
-      }
+      // HLS playback function removed (HLS disabled by default)
       
       // Event listeners
       downloadForm.addEventListener('submit', (e) => {
