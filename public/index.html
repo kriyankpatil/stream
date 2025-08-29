@@ -415,7 +415,7 @@
       
       function playWithHls(movieId, movieName) {
         if (window.Hls && Hls.isSupported()) {
-          const manifestUrl = `/hls/${movieId}/stream.m3u8?token=${encodeURIComponent(token)}`;
+          const manifestUrl = `/hls/${movieId}/stream.m3u8`;
           
           hls = new Hls({
             startLevel: 0,
@@ -424,13 +424,10 @@
             liveSyncDurationCount: 2,
             fragLoadingRetryDelay: 300,
             manifestLoadingRetryDelay: 300,
-            // Add authentication to all XHR requests
+            // Add authentication to all HLS XHR requests
             xhrSetup: function(xhr, url) {
-              // Add token to all HLS segment requests
               if (url.includes('/hls/')) {
-                const separator = url.includes('?') ? '&' : '?';
-                xhr.open('GET', url + separator + 'token=' + encodeURIComponent(token), true);
-                return false; // Prevent default open
+                try { xhr.setRequestHeader('Authorization', `Bearer ${token}`); } catch (e) {}
               }
             }
           });
@@ -454,8 +451,9 @@
             }
           });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          const manifestUrl = `/hls/${movieId}/stream.m3u8?token=${encodeURIComponent(token)}`;
-          video.src = manifestUrl;
+          const manifestUrl = `/hls/${movieId}/stream.m3u8`;
+          // Some native players won't send Authorization. As a fallback, append token here only for native HLS.
+          video.src = `${manifestUrl}?token=${encodeURIComponent(token)}`;
           video.addEventListener('loadedmetadata', () => video.play().catch(() => {}));
         } else {
           // Fallback to direct range streaming
