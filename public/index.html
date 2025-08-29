@@ -127,7 +127,8 @@
       </div>
       
       <div class="meta">
-        <span>Primary: Range <code>/video</code></span>
+        <span>Primary: HLS</span>
+        <span>Fallback: Range <code>/video</code></span>
         <a href="/api/health" target="_blank" rel="noopener">Health</a>
       </div>
       
@@ -137,7 +138,7 @@
       </p>
     </main>
     
-    
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.14/dist/hls.min.js"></script>
     <script>
       // Use the correct ACCESS_TOKEN that matches your backend
       const ACCESS_TOKEN = 'kriyank2024';
@@ -148,6 +149,7 @@
       const token = urlToken || ACCESS_TOKEN;
       
       let currentMovie = null;
+      let hls = null;
       let movies = [];
       
       const video = document.getElementById('video');
@@ -229,9 +231,11 @@
             <div class="movie-info">
               ${movie.movies.map(m => `${m.name}${m.extension} (${formatFileSize(m.size)})`).join('<br>')}
               <br>Added: ${formatDate(movie.createdAt)}
+              <br>HLS: ${movie.hasHls ? '✅ Ready' : '⏳ Processing'}
             </div>
             <div class="movie-actions">
               <button class="btn btn-success" onclick="playMovie('${movie.id}/${movie.movies[0].name}')">Play</button>
+              <button class="btn" onclick="regenerateHls('${movie.id}')">Regenerate HLS</button>
               <button class="btn btn-danger" onclick="deleteMovie('${movie.id}')">Delete</button>
             </div>
           </div>
@@ -327,7 +331,30 @@
         checkStatus();
       }
       
-      // HLS regeneration removed
+      // Regenerate HLS for a movie
+      async function regenerateHls(movieId) {
+        try {
+          const response = await fetch(`/api/movies/${movieId}/regenerate-hls`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+            showStatus(result.message, 'success');
+            // Reload movies after HLS regeneration
+            setTimeout(() => loadMovies(), 2000);
+          } else {
+            showStatus(`HLS regeneration failed: ${result.error}`, 'error');
+          }
+        } catch (error) {
+          console.error('HLS regeneration error:', error);
+          showStatus(`HLS regeneration failed: ${error.message}`, 'error');
+        }
+      }
       
       // Delete movie
       async function deleteMovie(movieId) {
@@ -371,20 +398,71 @@
         currentMovie = moviePath;
         const [movieId, movieName] = moviePath.split('/');
         
-        // HLS removed
+        // Stop current HLS if playing
+        if (hls) {
+          hls.destroy();
+          hls = null;
+        }
         
         // Reset video
         video.pause();
         video.removeAttribute('src');
         video.load();
         
-        // Always use direct range streaming
-        const rangeUrl = `/video/${movieId}/${movieName}?token=${encodeURIComponent(token)}`;
-        video.src = rangeUrl;
-        video.play().catch(() => {});
+        // Try HLS first
+        playWithHls(movieId, movieName);
       }
       
-      // HLS playback function removed (HLS disabled by default)
+      function playWithHls(movieId, movieName) {
+        if (window.Hls && Hls.isSupported()) {
+          const manifestUrl = `/hls/${movieId}/stream.m3u8?token=${encodeURIComponent(token)}`;
+          
+          hls = new Hls({
+            startLevel: 0,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+            liveSyncDurationCount: 2,
+            fragLoadingRetryDelay: 300,
+            manifestLoadingRetryDelay: 300,
+            // Add authentication to all XHR requests
+            xhrSetup: function(xhr, url) {
+              // Add token to all HLS segment requests
+              if (url.includes('/hls/')) {
+                const separator = url.includes('?') ? '&' : '?';
+                xhr.open('GET', url + separator + 'token=' + encodeURIComponent(token), true);
+                return false; // Prevent default open
+              }
+            }
+          });
+          
+          // Load HLS manifest with token
+          hls.loadSource(manifestUrl);
+          hls.attachMedia(video);
+          
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            console.log(`HLS manifest loaded successfully for ${movieName}`);
+            video.play().catch(() => {});
+          });
+          
+          hls.on(Hls.Events.ERROR, (e, data) => {
+            console.warn('HLS error:', data);
+            if (data.fatal) {
+              console.error('Fatal HLS error, falling back to direct video');
+              // Fallback to direct video streaming
+              const rangeUrl = `/video/${movieId}/${movieName}?token=${encodeURIComponent(token)}`;
+              video.src = rangeUrl;
+            }
+          });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          const manifestUrl = `/hls/${movieId}/stream.m3u8?token=${encodeURIComponent(token)}`;
+          video.src = manifestUrl;
+          video.addEventListener('loadedmetadata', () => video.play().catch(() => {}));
+        } else {
+          // Fallback to direct range streaming
+          const rangeUrl = `/video/${movieId}/${movieName}?token=${encodeURIComponent(token)}`;
+          video.src = rangeUrl;
+        }
+      }
       
       // Event listeners
       downloadForm.addEventListener('submit', (e) => {

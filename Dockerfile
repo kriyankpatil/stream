@@ -17,11 +17,8 @@ COPY package*.json ./
 # Install Node.js dependencies
 RUN npm ci --omit=dev --ignore-scripts || npm install --omit=dev
 
-# Copy only necessary application code (exclude movies via .dockerignore)
-COPY server.js ./
-COPY public ./public
-COPY nginx.conf ./nginx.conf
-COPY README.md ./README.md
+# Copy application code
+COPY . .
 
 # Create necessary directories with proper permissions
 RUN mkdir -p /app/public /app/movies /app/hls && \
