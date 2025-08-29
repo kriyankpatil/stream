@@ -7,18 +7,7 @@ const https = require('https');
 const http = require('http');
 const url = require('url');
 
-// Use system-installed ffmpeg (installed via apt in Dockerfile)
-let ffmpegExecutable = process.env.FFMPEG_PATH || 'ffmpeg';
-
-// Verify ffmpeg is available
-try {
-  const { execSync } = require('child_process');
-  execSync(`${ffmpegExecutable} -version`, { stdio: 'ignore' });
-  console.log(`Using ffmpeg: ${ffmpegExecutable}`);
-} catch (error) {
-  console.error(`FFmpeg not found at ${ffmpegExecutable}. Please ensure ffmpeg is installed.`);
-  process.exit(1);
-}
+// FFmpeg not required (HLS removed). Keeping child_process import for downloads only.
 
 // Verify fast download tools are available
 const downloadTools = [
@@ -41,7 +30,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '';
-const FORCE_HLS = process.env.FORCE_HLS === '1';
+// HLS removed; FORCE_HLS no longer used
 
 // Middleware for parsing JSON
 app.use(express.json({ limit: '10mb' }));
@@ -92,7 +81,6 @@ function scanMovies() {
               name: folder.name,
               folder: folderPath,
               movies: movieFiles,
-              hlsPath: path.join(folderPath, 'hls'),
               createdAt: fs.statSync(folderPath).birthtime
             };
           } catch (folderError) {
@@ -125,24 +113,7 @@ function scanMovies() {
 // Initial scan
 scanMovies();
 
-// Serve HLS files only if FORCE_HLS is enabled
-if (FORCE_HLS) {
-  MOVIES.forEach(movie => {
-    app.use(`/hls/${movie.id}`, requireToken, express.static(movie.hlsPath, {
-      setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.m3u8')) {
-          res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-          res.setHeader('Cache-Control', 'public, max-age=60');
-        } else if (filePath.endsWith('.ts')) {
-          res.setHeader('Content-Type', 'video/mp2t');
-          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        } else if (filePath.endsWith('.mp4') || filePath.endsWith('.m4s')) {
-          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        }
-      }
-    }));
-  });
-}
+// HLS serving removed
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true });
@@ -171,7 +142,7 @@ app.get('/api/movies', (req, res) => {
       size: m.size
     })),
     createdAt: movie.createdAt,
-    hasHls: fs.existsSync(movie.hlsPath) && fs.existsSync(path.join(movie.hlsPath, 'stream.m3u8'))
+    // HLS removed
   })));
 });
 
@@ -415,20 +386,7 @@ async function downloadWithFastMethod(downloadId, downloadUrl, filePath, title, 
     scanMovies();
     console.log('Movies rescanned');
     
-    // Generate HLS for the new movie
-    const newMovie = MOVIES.find(m => m.id === sanitizedTitle);
-    console.log('Looking for new movie:', { 
-      sanitizedTitle, 
-      found: !!newMovie, 
-      moviesCount: MOVIES.length 
-    });
-    
-    if (newMovie && newMovie.movies.length > 0) {
-      console.log('Starting HLS generation for new movie');
-      generateHls(newMovie, newMovie.movies[0]);
-    } else {
-      console.log('No new movie found or no movie files');
-    }
+    // HLS generation removed
     
     console.log('Download process completed successfully');
     
@@ -500,24 +458,7 @@ app.delete('/api/movies/:movieId', requireToken, (req, res) => {
   }
 });
 
-// Regenerate HLS for specific movie
-app.post('/api/movies/:movieId/regenerate-hls', requireToken, (req, res) => {
-  const { movieId } = req.params;
-  const movie = MOVIES.find(m => m.id === movieId);
-  
-  if (!movie) {
-    return res.status(404).json({ error: 'Movie not found' });
-  }
-  
-  if (movie.movies.length === 0) {
-    return res.status(400).json({ error: 'No movie files found' });
-  }
-  
-  // Force HLS regeneration
-  generateHls(movie, movie.movies[0], true);
-  
-  res.json({ success: true, message: `HLS regeneration started for "${movie.name}"` });
-});
+// HLS regeneration endpoint removed
 
 // Optional auth: if ACCESS_TOKEN is set, require it for protected routes
 function requireToken(req, res, next) {
@@ -601,87 +542,7 @@ app.get('/video/:movieId/:movieName', requireToken, (req, res) => {
   });
 });
 
-// HLS generation for all movies (non-blocking)
-function generateHlsForAll() {
-  if (!FORCE_HLS) return;
-  MOVIES.forEach(movie => {
-    if (movie.movies.length > 0) {
-      const movieFile = movie.movies[0];
-      generateHls(movie, movieFile);
-    }
-  });
-}
-
-// HLS generation for a specific movie
-function generateHls(movie, movieFile, force = false) {
-  if (!FORCE_HLS && !force) {
-    console.log('FORCE_HLS disabled; skipping HLS generation');
-    return;
-  }
-  const hlsDir = movie.hlsPath;
-  const manifestPath = path.join(hlsDir, 'stream.m3u8');
-  
-  // Skip regeneration if manifest and at least one segment already exist (unless forced)
-  if (!force) {
-    try {
-      const hasManifest = fs.existsSync(manifestPath);
-      const hasAnySegment = fs.existsSync(hlsDir) && (fs.readdirSync(hlsDir).some((n) => n.startsWith('seg_') && n.endsWith('.ts')));
-      if (hasManifest && hasAnySegment) {
-        console.log(`HLS already present for ${movie.name}; skipping regeneration.`);
-        return;
-      }
-    } catch {}
-  }
-  
-  try { 
-    fs.mkdirSync(hlsDir, { recursive: true }); 
-  } catch {}
-
-  console.log(`Generating HLS for ${movie.name} (${movieFile.name})...`);
-  if (!ffmpegExecutable) {
-    console.warn('ffmpeg is not available. Skipping HLS generation.');
-    return;
-  }
-  
-  const args = [
-    '-hide_banner', '-y',
-    '-i', movieFile.path,
-    // Select first video and audio tracks
-    '-map', '0:v:0', '-map', '0:a:0?',
-    // Copy video as-is (no re-encode), transcode audio to AAC for browser support
-    '-c:v', 'copy',
-    '-c:a', 'aac',
-    '-b:a', '160k',
-    // HLS settings
-    '-f', 'hls',
-    '-hls_time', '6',
-    '-hls_list_size', '0',
-    '-hls_segment_filename', path.join(hlsDir, 'seg_%03d.ts'),
-    manifestPath
-  ];
-
-  const ffmpeg = spawn(ffmpegExecutable, args);
-  
-  ffmpeg.stdout.on('data', (data) => {
-    console.log(`[${movie.name}] ${data.toString().trim()}`);
-  });
-  
-  ffmpeg.stderr.on('data', (data) => {
-    console.log(`[${movie.name}] ${data.toString().trim()}`);
-  });
-  
-  ffmpeg.on('close', (code) => {
-    if (code === 0) {
-      console.log(`HLS generation completed for ${movie.name}`);
-    } else {
-      console.error(`HLS generation failed for ${movie.name} with code ${code}`);
-    }
-  });
-  
-  ffmpeg.on('error', (err) => {
-    console.error(`Failed to start ffmpeg for ${movie.name}:`, err);
-  });
-}
+// HLS generation functions removed
 
 // Start server
 app.listen(PORT, HOST, () => {
@@ -712,10 +573,7 @@ app.listen(PORT, HOST, () => {
     console.error('Failed to create directories on startup:', dirError);
   }
   
-  // Generate HLS for all movies
-  if (MOVIES.length > 0) {
-    generateHlsForAll();
-  } else {
+  if (MOVIES.length === 0) {
     console.log('No movies found. Create folders in ./movies/ with movie files or use the download interface.');
   }
 });
