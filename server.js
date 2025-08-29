@@ -125,9 +125,17 @@ function scanMovies() {
 // Initial scan
 scanMovies();
 
-// Serve HLS files for each movie
-MOVIES.forEach(movie => {
-  app.use(`/hls/${movie.id}`, requireToken, express.static(movie.hlsPath, {
+// Serve HLS files dynamically for any movie (works for movies added after startup)
+app.use('/hls/:movieId', requireToken, (req, res, next) => {
+  const { movieId } = req.params;
+  // Ensure we have the latest movies list
+  scanMovies();
+  const movie = MOVIES.find(m => m.id === movieId);
+  if (!movie) {
+    return res.status(404).send('Movie not found');
+  }
+
+  return express.static(movie.hlsPath, {
     setHeaders: (res, filePath) => {
       if (filePath.endsWith('.m3u8')) {
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
@@ -139,7 +147,7 @@ MOVIES.forEach(movie => {
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       }
     }
-  }));
+  })(req, res, next);
 });
 
 app.get('/api/health', (req, res) => {
