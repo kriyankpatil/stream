@@ -100,6 +100,7 @@ cf.*.log
 
 # Movie files (should be mounted as volume)
 movie/
+movies/
 
 # Build artifacts
 *.zip
