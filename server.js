@@ -421,16 +421,28 @@ async function downloadWithFastMethod(downloadId, downloadUrl, filePath, title, 
     downloadInfo.fileSize = fileStats.size;
     activeDownloads.set(downloadId, downloadInfo);
     
+    // Ensure HLS is generated inside this movie's folder immediately
+    if (FORCE_HLS && ffmpegExecutable) {
+      try {
+        const movieContext = {
+          id: sanitizedTitle,
+          name: sanitizedTitle,
+          hlsPath: path.join(path.dirname(filePath), 'hls')
+        };
+        const movieFileContext = {
+          path: filePath,
+          name: path.parse(fileName).name
+        };
+        generateHls(movieContext, movieFileContext, true);
+      } catch (e) {
+        console.warn('Failed to initiate HLS generation after download:', e);
+      }
+    }
+    
     // Rescan movies to include the new one
     console.log('Rescanning movies...');
     scanMovies();
     console.log('Movies rescanned');
-    
-    // Optionally kick off HLS generation in background
-    const newMovie = MOVIES.find(m => m.id === sanitizedTitle);
-    if (FORCE_HLS && ffmpegExecutable && newMovie && newMovie.movies.length > 0) {
-      generateHls(newMovie, newMovie.movies[0], true);
-    }
     
     console.log('Download process completed successfully');
     
@@ -657,6 +669,16 @@ function generateHls(movie, movieFile, force = false) {
 app.get('/api/hls/:movieId/status', requireToken, (req, res) => {
   const info = hlsProgress.get(req.params.movieId) || { status: 'idle' };
   res.json(info);
+});
+
+// Manual HLS regenerate endpoint
+app.post('/api/movies/:movieId/regenerate-hls', requireToken, (req, res) => {
+  if (!FORCE_HLS || !ffmpegExecutable) return res.json({ success: false, error: 'HLS disabled' });
+  const { movieId } = req.params;
+  const movie = MOVIES.find(m => m.id === movieId);
+  if (!movie || movie.movies.length === 0) return res.status(404).json({ error: 'Movie not found' });
+  generateHls(movie, movie.movies[0], true);
+  res.json({ success: true, message: `HLS regeneration started for "${movie.name}"` });
 });
 
 // Start server
