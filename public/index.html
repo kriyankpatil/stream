@@ -148,7 +148,6 @@
       const token = urlToken || ACCESS_TOKEN;
       
       let currentMovie = null;
-      let hls = null;
       let movies = [];
       
       const video = document.getElementById('video');
@@ -230,11 +229,9 @@
             <div class="movie-info">
               ${movie.movies.map(m => `${m.name}${m.extension} (${formatFileSize(m.size)})`).join('<br>')}
               <br>Added: ${formatDate(movie.createdAt)}
-              <br>HLS: ${movie.hasHls ? '✅ Ready' : '⏳ Processing'}
             </div>
             <div class="movie-actions">
               <button class="btn btn-success" onclick="playMovie('${movie.id}/${movie.movies[0].name}')">Play</button>
-              <button class="btn" onclick="regenerateHls('${movie.id}')">Regenerate HLS</button>
               <button class="btn btn-danger" onclick="deleteMovie('${movie.id}')">Delete</button>
             </div>
           </div>
@@ -330,30 +327,7 @@
         checkStatus();
       }
       
-      // Regenerate HLS for a movie
-      async function regenerateHls(movieId) {
-        try {
-          const response = await fetch(`/api/movies/${movieId}/regenerate-hls`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${token}`
-            }
-          });
-          
-          const result = await response.json();
-          
-          if (result.success) {
-            showStatus(result.message, 'success');
-            // Reload movies after HLS regeneration
-            setTimeout(() => loadMovies(), 2000);
-          } else {
-            showStatus(`HLS regeneration failed: ${result.error}`, 'error');
-          }
-        } catch (error) {
-          console.error('HLS regeneration error:', error);
-          showStatus(`HLS regeneration failed: ${error.message}`, 'error');
-        }
-      }
+      // HLS regeneration removed
       
       // Delete movie
       async function deleteMovie(movieId) {
@@ -397,11 +371,7 @@
         currentMovie = moviePath;
         const [movieId, movieName] = moviePath.split('/');
         
-        // Stop current HLS if playing
-        if (hls) {
-          hls.destroy();
-          hls = null;
-        }
+        // HLS removed
         
         // Reset video
         video.pause();
